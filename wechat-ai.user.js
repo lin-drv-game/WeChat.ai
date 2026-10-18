@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wechat.ai
 // @namespace    wechat.ai
-// @version      3.7.0
+// @version      3.7.1
 // @description  wechat.ai
 // @match        https://www.doubao.com/*
 // @match        https://chat.deepseek.com/*
