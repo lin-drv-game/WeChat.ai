@@ -35,8 +35,8 @@
 
     const AVATARS = {
         user:     { img: 'https://lh3.googleusercontent.com/a/default-user=s100', text: 'U', bg: '#07c160' },
-        doubao:   { img: 'https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/favicon-doubao.png', text: '包', bg: '#f5a623' },
-        deepseek: { img: 'https://avatars.githubusercontent.com/u/148330874?v=4', text: '鲸', bg: '#4a6cf7' }
+        doubao:   { img: 'data:image/jpeg;base64,...', text: '包', bg: '#f5a623' },
+        deepseek: { img: 'data:image/jpeg;base64,...', text: '鲸', bg: '#4a6cf7' }
     };
     ['user', 'doubao', 'deepseek'].forEach(k => {
         const s = GM_getValue('wechat_ai_avatar_' + k);
@@ -1057,64 +1057,64 @@
     });
 
     timer.add(() => {
-        如果 (!准备 || 日期.现在() < urlChangeUntil) 返回;
-        常数最近的 = getReplyData();
-        如果 ((!最近的.文本 || 最近的.文本.长度 < 5)&& !最近的.图片.长度) 返回;
+        if (!ready || Date.now() < urlChangeUntil) return;
+        const latest = getReplyData();
+        if ((!latest.text || latest.text.length < 5) && !latest.images.length) return;
 
-        常数键 = 最近的.文本 + '###' + 最近的.图片.加入('|');
-        如果 (键 !== lastKey) { lastKey = 键; 稳定的 = 0; 返回; }
-        稳定的++;
-        如果 (稳定的 < 3 || 看到.有(键)) 返回;
-        看到.增加(键);
-        稳定的 = 0;
+        const key = latest.text + '###' + latest.images.join('|');
+        if (key !== lastKey) { lastKey = key; stable = 0; return; }
+        stable++;
+        if (stable < 3 || seen.has(key)) return;
+        seen.add(key);
+        stable = 0;
 
-        推送(我的角色, 最近的.文本, 最近的.图片);
-        冲洗();
+        pushMessage(myRole, latest.text, latest.images);
+        flush();
 
-        如果 (!悬而未决) 返回;
-        常数请 = 悬而未决;
-        悬而未决 = 等于零的;
+        if (!pendingForward) return;
+        const pf = pendingForward;
+        pendingForward = null;
 
-        常数会议 = 获取会话();
-        常数 newRound = 请.圆 + 1;
-        如果 (newRound >= 会议.最大轮数 * 2) {
-            推送('system', '对话结束（' + 会议.最大轮数 + '轮）');
-            冲洗();
-            会议.活跃的 = 虚假的;
-            会议(会议);
-            返回;
+        const session = getSession();
+        const newRound = pf.round + 1;
+        if (newRound >= session.maxRounds * 2) {
+            pushMessage('system', '对话结束（' + session.maxRounds + '轮）');
+            flush();
+            session.active = false;
+            setSession(session);
+            return;
         }
-        会议(对象.分配({}, 会议, { 圆: newRound }));
+        setSession(Object.assign({}, session, { round: newRound }));
 
-        常数targetKey = 请.从 === 我的角色 ? K.任务 : K.回复;
-        常数charHint = 会议.最大字符数 > 0 ? '\n\n（请用不超过' + 会议.最大字符数 + '字简短回复）' : '';
-        常数文本 = 请.用户
-            ? “用户：” + 请.用户 + '\n\n' + myLabel + '：' + 最近的.文本 + charHint
-            : myLabel + '：' + 最近的.文本 + charHint;
+        const targetKey = pf.from === myRole ? K.TASK : K.REPLY;
+        const charHint = session.maxChars > 0 ? '\n\n（请用不超过' + session.maxChars + '字简短回复）' : '';
+        const text = pf.userText
+            ? 'User：' + pf.userText + '\n\n' + myLabel + '：' + latest.text + charHint
+            : myLabel + '：' + latest.text + charHint;
 
-        GM_setValue(targetKey, JSON.字符串化({
-            文本,
-            从: 请.从,
-            圆: newRound,
-            时间戳: 日期.现在()
+        GM_setValue(targetKey, JSON.stringify({
+            text,
+            from: pf.from,
+            round: newRound,
+            timestamp: Date.now()
         }));
-        推送('system', '已发给' + 其他标签 + '（' + newRound + '/' + (会议.最大轮数 * 2) + '）');
-        冲洗();
+        pushMessage('system', '已发给' + otherLabel + '（' + newRound + '/' + (session.maxRounds * 2) + '）');
+        flush();
     });
 
-    如果 (isDoubao) {
+    if (isDoubao) {
         setInterval(() => {
-            如果 (位置.路径名 === 当前路径) 返回;
-            当前路径 = 位置.路径名;
-            会议分配会议.圆() + 2000;
-            newRound = '';
-            常数 = 0;
-            targetKey请.从({}, 对象, { 分配: 会议 }));(() => {
-                圆charHint: \ =myLabel.'：'===最近的？你. charHint：；==+newRoundmyLabel；（!）：'>0最近的'+会议.最大字符数+'文本）charHint=myLabel=.：';
-                ? 最近的文本 + charHint.targetKeyJSON字符串化 + '\n\n' + 文本 + 从 + 请.从 + 圆 + newRound.时间戳日期 + 现在推送('已发给', 其他标签.'（'({();
-                newRound = 会议最大轮数.'）'.冲洗'system'如果+isDoubao+setInterval+如果+'/'+位置.'路径名 + '*2'当前路径{. 返回. 当前路径位置路径名 GM_setValue{. #图片
-                urlChangeUntil = 日期..现在; (lastKey稳定的 = setTimeout() + 2000;.如果 = ''准备返回常数恶狗.=0getReplyData万(() => {  文本
-                }, 500)//这段代码是 JavaScript you you you you you. Com（！）{const cur=getReplyData（）；. const K=cur++++“###################################################################################################################################################
+            if (location.pathname === currentPath) return;
+            currentPath = location.pathname;
+            urlChangeUntil = Date.now() + 2000;
+            lastKey = '';
+            stable = 0;
+            setTimeout(() => {
+                if (!ready) return;
+                const cur = getReplyData();
+                const k = cur.text + '###' + cur.images.join('|');
+                if (cur.text || cur.images.length) { seen.add(k); lastKey = k; }
+                stable = 0;
             }, 1500);
         }, 500);
     }
