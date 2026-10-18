@@ -35,8 +35,8 @@
 
     const AVATARS = {
         user:     { img: 'https://lh3.googleusercontent.com/a/default-user=s100', text: 'U', bg: '#07c160' },
-        doubao:   { img: 'data:image/jpeg;base64,...', text: '包', bg: '#f5a623' },
-        deepseek: { img: 'data:image/jpeg;base64,...', text: '鲸', bg: '#4a6cf7' }
+        doubao:   { img: 'https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/favicon-doubao.png', text: '包', bg: '#f5a623' },
+        deepseek: { img: 'https://avatars.githubusercontent.com/u/148330874?v=4', text: '鲸', bg: '#4a6cf7' }
     };
     ['user', 'doubao', 'deepseek'].forEach(k => {
         const s = GM_getValue('wechat_ai_avatar_' + k);
