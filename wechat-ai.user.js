@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wechat.ai
 // @namespace    wechat.ai
-// @version      3.5.1
+// @version      3.7.0
 // @description  wechat.ai
 // @match        https://www.doubao.com/*
 // @match        https://chat.deepseek.com/*
@@ -15,205 +15,193 @@
     'use strict';
 
     const isDoubao = location.hostname.includes('doubao.com');
-    const isDeepseek = location.hostname.includes('chat.deepseek.com');
+    const myRole = isDoubao ? 'doubao' : 'deepseek';
+    const myLabel = isDoubao ? '豆包' : 'DeepSeek';
+    const otherLabel = isDoubao ? 'D老师' : '豆包';
 
-    const KEY_TASK_DS = 'wechat_ai_task_deepseek';
-    const KEY_REPLY_DS = 'wechat_ai_reply_deepseek';
-    const KEY_MESSAGES = 'wechat_ai_messages';
-    const KEY_USER_MSG = 'wechat_ai_user_msg';
-    const KEY_BG = 'wechat_ai_bg';
-    const KEY_SESSION = 'wechat_ai_session';
-
-    const DEFAULT_MAX_ROUNDS = 1;
-    const DEFAULT_MAX_CHARS = 100;
+    const K = {
+        TASK: 'wechat_ai_task_deepseek',
+        REPLY: 'wechat_ai_reply_deepseek',
+        MSGS: 'wechat_ai_messages',
+        USER: 'wechat_ai_user_msg',
+        BG: 'wechat_ai_bg',
+        SESS: 'wechat_ai_session'
+    };
+    const MAX_ROUNDS = 1;
+    const MAX_CHARS = 100;
+    const ANIM_MS = 220;
+    const MIN_SNAP_PX = 40;
+    const IMG_ACCEPT = 'image/jpeg,image/png,image/webp,image/gif,image/bmp,image/heic,image/heif,image/*';
 
     const AVATARS = {
         user:     { img: 'https://lh3.googleusercontent.com/a/default-user=s100', text: 'U', bg: '#07c160' },
-        doubao:   { img: 'data:image/jpeg;base64,...', text: '包', bg: '#f5a623' },
-        deepseek: { img: 'data:image/jpeg;base64,...', text: '鲸', bg: '#4a6cf7' }
+        doubao:   { img: 'https://lf-flow-web-cdn.doubao.com/obj/flow-doubao/doubao/chat/favicon-doubao.png', text: '包', bg: '#f5a623' },
+        deepseek: { img: 'https://avatars.githubusercontent.com/u/148330874?v=4', text: '鲸', bg: '#4a6cf7' }
     };
-
-    ['user', 'doubao', 'deepseek'].forEach(function (k) {
-        const saved = GM_getValue('wechat_ai_avatar_' + k);
-        if (saved) AVATARS[k].img = saved;
+    ['user', 'doubao', 'deepseek'].forEach(k => {
+        const s = GM_getValue('wechat_ai_avatar_' + k);
+        if (s) AVATARS[k].img = s;
     });
 
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    function rafThrottle(fn) {
+        let pending = false, args;
+        return function (...a) {
+            args = a;
+            if (!pending) {
+                pending = true;
+                requestAnimationFrame(() => { pending = false; fn.apply(null, args); });
+            }
+        };
+    }
+
     function getSession() {
-        const raw = GM_getValue(KEY_SESSION);
-        if (!raw) return { round: 0, maxRounds: DEFAULT_MAX_ROUNDS, maxChars: DEFAULT_MAX_CHARS, active: false };
+        const raw = GM_getValue(K.SESS);
+        if (!raw) return { round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: false };
         try {
             const s = JSON.parse(raw);
             return {
                 round: s.round || 0,
-                maxRounds: s.maxRounds || DEFAULT_MAX_ROUNDS,
-                maxChars: s.maxChars || DEFAULT_MAX_CHARS,
+                maxRounds: s.maxRounds || MAX_ROUNDS,
+                maxChars: s.maxChars || MAX_CHARS,
                 active: !!s.active
             };
         } catch (e) {
-            return { round: 0, maxRounds: DEFAULT_MAX_ROUNDS, maxChars: DEFAULT_MAX_CHARS, active: false };
+            return { round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: false };
         }
     }
+    const setSession = s => GM_setValue(K.SESS, JSON.stringify(s));
+    const resetSession = () => setSession({ round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: true });
 
-    function setSession(s) {
-        GM_setValue(KEY_SESSION, JSON.stringify(s));
+    function getMessages() {
+        try { const a = JSON.parse(GM_getValue(K.MSGS)); return Array.isArray(a) ? a : []; }
+        catch (e) { return []; }
+    }
+    function pushMessage(who, text, images) {
+        const msgs = getMessages();
+        msgs.push({ who, text: text || '', images: images || [], ts: Date.now() + Math.random() });
+        GM_setValue(K.MSGS, JSON.stringify(msgs));
     }
 
-    function resizeToDataURL(file, size) {
-        return new Promise(function (resolve, reject) {
-            const reader = new FileReader();
-            reader.onerror = reject;
-            reader.onload = function () {
+    function loadImage(file) {
+        return new Promise((resolve, reject) => {
+            const r = new FileReader();
+            r.onerror = reject;
+            r.onload = () => {
                 const img = new Image();
                 img.onerror = reject;
-                img.onload = function () {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = size;
-                    canvas.height = size;
-                    const ctx = canvas.getContext('2d');
-                    const minSide = Math.min(img.width, img.height);
-                    const sx = (img.width - minSide) / 2;
-                    const sy = (img.height - minSide) / 2;
-                    ctx.drawImage(img, sx, sy, minSide, minSide, 0, 0, size, size);
-                    resolve(canvas.toDataURL('image/jpeg', 0.82));
-                };
-                img.src = reader.result;
+                img.onload = () => resolve(img);
+                img.src = r.result;
             };
-            reader.readAsDataURL(file);
+            r.readAsDataURL(file);
         });
     }
 
-    function resizeImage(file, maxSide, quality) {
-        return new Promise(function (resolve, reject) {
-            const reader = new FileReader();
-            reader.onerror = reject;
-            reader.onload = function () {
-                const img = new Image();
-                img.onerror = reject;
-                img.onload = function () {
-                    let w = img.width, h = img.height;
-                    const scale = Math.min(maxSide / w, maxSide / h, 1);
-                    w = Math.round(w * scale);
-                    h = Math.round(h * scale);
-                    const canvas = document.createElement('canvas');
-                    canvas.width = w;
-                    canvas.height = h;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(img, 0, 0, w, h);
-                    resolve(canvas.toDataURL('image/jpeg', quality || 0.75));
-                };
-                img.src = reader.result;
-            };
-            reader.readAsDataURL(file);
-        });
+    async function resizeImage(file, maxSide, quality, square) {
+        const img = await loadImage(file);
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        if (square) {
+            const min = Math.min(img.width, img.height);
+            canvas.width = canvas.height = maxSide;
+            ctx.drawImage(img, (img.width - min) / 2, (img.height - min) / 2, min, min, 0, 0, maxSide, maxSide);
+        } else {
+            const scale = Math.min(maxSide / img.width, maxSide / img.height, 1);
+            canvas.width = Math.round(img.width * scale);
+            canvas.height = Math.round(img.height * scale);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        }
+        return canvas.toDataURL('image/jpeg', quality || 0.75);
     }
 
-    function pickAvatar(who, avatarEl) {
+    function pickFile(accept, cb) {
         const input = document.createElement('input');
         input.type = 'file';
-        input.accept = 'image/*';
+        input.accept = accept;
         input.style.display = 'none';
         document.body.appendChild(input);
-        input.onchange = async function () {
-            const file = input.files && input.files[0];
-            if (file) {
-                try {
-                    const dataUrl = await resizeToDataURL(file, 64);
-                    AVATARS[who].img = dataUrl;
-                    GM_setValue('wechat_ai_avatar_' + who, dataUrl);
-                    avatarEl.style.backgroundImage = 'url("' + dataUrl + '")';
-                    avatarEl.textContent = '';
-                } catch (e) {}
-            }
-            if (input.parentNode) input.parentNode.removeChild(input);
+        input.onchange = async () => {
+            const f = input.files && input.files[0];
+            if (f) try { await cb(f); } catch (e) {}
+            input.remove();
         };
         input.click();
+    }
+
+    function pickAvatar(who, el) {
+        pickFile(IMG_ACCEPT, async f => {
+            const url = await resizeImage(f, 64, 0.82, true);
+            AVATARS[who].img = url;
+            GM_setValue('wechat_ai_avatar_' + who, url);
+            el.style.backgroundImage = `url("${url}")`;
+            el.textContent = '';
+        });
+    }
+
+    function pickUserImage() {
+        pickFile(IMG_ACCEPT, async f => {
+            const url = await resizeImage(f, 480, 0.7);
+            resetSession();
+            pushMessage('user', '', [url]);
+            flush();
+            GM_setValue(K.USER, JSON.stringify({ text: '[用户上传了一张图片]', image: url, ts: Date.now(), source: myRole }));
+        });
+    }
+
+    function pickBackground() {
+        const el = document.getElementById('wechat-ai-messages');
+        if (!el) return;
+        pickFile(IMG_ACCEPT, async f => {
+            const url = await resizeImage(f, 1280, 0.75);
+            GM_setValue(K.BG, url);
+            el.style.backgroundImage = `url("${url}")`;
+        });
     }
 
     function makeWorkerTimer() {
         const listeners = [];
         try {
             const src = 'setInterval(function(){postMessage(1)},1000)';
-            const blob = new Blob([src], { type: 'application/javascript' });
-            const worker = new Worker(URL.createObjectURL(blob));
-            worker.onmessage = function () {
-                for (let i = 0; i < listeners.length; i++) listeners[i]();
-            };
-            return { add: function (fn) { listeners.push(fn); } };
+            const w = new Worker(URL.createObjectURL(new Blob([src], { type: 'application/javascript' })));
+            w.onmessage = () => listeners.forEach(fn => fn());
         } catch (e) {
-            setInterval(function () {
-                for (let i = 0; i < listeners.length; i++) listeners[i]();
-            }, 1000);
-            return { add: function (fn) { listeners.push(fn); } };
+            setInterval(() => listeners.forEach(fn => fn()), 1000);
         }
+        return { add: fn => listeners.push(fn) };
     }
-
-    const workerTimer = makeWorkerTimer();
-
-    function getMessages() {
-        const raw = GM_getValue(KEY_MESSAGES);
-        if (!raw) return [];
-        try {
-            const arr = JSON.parse(raw);
-            return Array.isArray(arr) ? arr : [];
-        } catch (e) {
-            return [];
-        }
-    }
-
-    function pushMessage(who, text, images) {
-        const msgs = getMessages();
-        const msg = {
-            who: who,
-            text: text || '',
-            images: images || [],
-            ts: Date.now() + Math.random()
-        };
-        msgs.push(msg);
-        GM_setValue(KEY_MESSAGES, JSON.stringify(msgs));
-        return msg;
-    }
+    const timer = makeWorkerTimer();
 
     async function setTextarea(el, text) {
-        const setter = Object.getOwnPropertyDescriptor(
-            window.HTMLTextAreaElement.prototype, 'value'
-        ).set;
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
         setter.call(el, '');
         el.dispatchEvent(new Event('input', { bubbles: true }));
-        await new Promise(r => setTimeout(r, 60));
+        await sleep(60);
         setter.call(el, text);
         el.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
-    function pasteIntoProseMirror(el, text) {
+    function pasteText(el, text) {
         el.focus();
         const dt = new DataTransfer();
         dt.setData('text/plain', text);
-        el.dispatchEvent(new ClipboardEvent('paste', {
-            clipboardData: dt,
-            bubbles: true,
-            cancelable: true
-        }));
+        el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
     }
 
     async function typeIntoDoubao(text) {
         const editor = document.querySelector('div[contenteditable="true"]');
         if (editor) {
             editor.focus();
-            pasteIntoProseMirror(editor, text);
-            await new Promise(r => setTimeout(r, 400));
-
-            if (editor.innerHTML.length > 0 || (editor.innerText || '').trim().length > 0) return true;
-
+            pasteText(editor, text);
+            await sleep(400);
+            if (editor.innerHTML.length > 0 || (editor.innerText || '').trim()) return true;
             editor.focus();
             document.execCommand('insertText', false, text);
-            await new Promise(r => setTimeout(r, 300));
-
-            if (editor.innerHTML.length > 0 || (editor.innerText || '').trim().length > 0) return true;
-
+            await sleep(300);
+            if (editor.innerHTML.length > 0 || (editor.innerText || '').trim()) return true;
             editor.textContent = text;
-            await new Promise(r => setTimeout(r, 300));
-
-            return (editor.innerText || '').trim().length > 0;
+            await sleep(300);
+            return !!(editor.innerText || '').trim();
         }
         const ta = document.querySelector('textarea');
         if (ta && ta.offsetParent !== null) {
@@ -225,30 +213,17 @@
 
     async function pasteImageToDoubao(base64) {
         try {
-            const res = await fetch(base64);
-            const blob = await res.blob();
+            const blob = await (await fetch(base64)).blob();
             const file = new File([blob], 'image_' + Date.now() + '.jpg', { type: 'image/jpeg' });
-
             const editor = document.querySelector('div[contenteditable="true"]');
             if (!editor) return false;
-
             editor.focus();
-            await new Promise(r => setTimeout(r, 200));
-
+            await sleep(200);
             const dt = new DataTransfer();
             dt.items.add(file);
-
-            const evt = new ClipboardEvent('paste', {
-                clipboardData: dt,
-                bubbles: true,
-                cancelable: true
-            });
-            editor.dispatchEvent(evt);
-
+            editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
             return true;
-        } catch (e) {
-            return false;
-        }
+        } catch (e) { return false; }
     }
 
     async function typeIntoDeepseek(text) {
@@ -258,197 +233,142 @@
         return true;
     }
 
+    const typeIntoMyAI = text => isDoubao ? typeIntoDoubao(text) : typeIntoDeepseek(text);
+
     function pressEnter(el) {
-        el.dispatchEvent(new KeyboardEvent('keydown', {
+        ['keydown', 'keyup'].forEach(t => el.dispatchEvent(new KeyboardEvent(t, {
             key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true
-        }));
-        el.dispatchEvent(new KeyboardEvent('keyup', {
-            key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true
-        }));
+        })));
     }
 
-    function isEnabled(el) {
-        if (!el) return false;
-        if (el.disabled) return false;
-        if (el.getAttribute('aria-disabled') === 'true') return false;
-        if (el.offsetParent === null) return false;
-        return true;
-    }
+    const isEnabled = el => el && !el.disabled && el.getAttribute('aria-disabled') !== 'true' && el.offsetParent !== null;
 
     function findSendBtn(editorEl) {
-        const labeled = document.querySelectorAll('[aria-label]');
+        const labeled = [...document.querySelectorAll('[aria-label]')];
         for (const b of labeled) {
-            const label = (b.getAttribute('aria-label') || '').trim();
-            if (label === '发送' || label.toLowerCase() === 'send') {
-                if (isEnabled(b)) return b;
-            }
+            const l = (b.getAttribute('aria-label') || '').trim();
+            if ((l === '发送' || l.toLowerCase() === 'send') && isEnabled(b)) return b;
         }
         for (const b of labeled) {
-            const label = (b.getAttribute('aria-label') || '').trim();
-            if (/^(发送|send)/i.test(label)) {
-                if (isEnabled(b)) return b;
-            }
+            const l = (b.getAttribute('aria-label') || '').trim();
+            if (/^(发送|send)/i.test(l) && isEnabled(b)) return b;
         }
         if (editorEl) {
-            let parent = editorEl.parentElement;
-            for (let i = 0; i < 6 && parent; i++) {
-                const btns = parent.querySelectorAll('button, div[role="button"]');
-                const list = [];
-                for (const b of btns) {
-                    if (isEnabled(b)) list.push(b);
-                }
-                if (list.length > 0) return list[list.length - 1];
-                parent = parent.parentElement;
+            let p = editorEl.parentElement;
+            for (let i = 0; i < 6 && p; i++) {
+                const btns = [...p.querySelectorAll('button, div[role="button"]')].filter(isEnabled);
+                if (btns.length) return btns[btns.length - 1];
+                p = p.parentElement;
             }
         }
-        const all = document.querySelectorAll('button, div[role="button"]');
-        for (const b of all) {
-            const t = (b.innerText || '').trim();
-            if ((t === '发送' || t.toLowerCase() === 'send') && isEnabled(b)) return b;
-        }
-        return null;
+        return [...document.querySelectorAll('button, div[role="button"]')]
+            .find(b => (b.innerText || '').trim() === '发送' && isEnabled(b)) || null;
     }
 
-    async function waitAndClickSend(editorEl, timeoutMs) {
-        timeoutMs = timeoutMs || 4000;
+    async function waitAndClickSend(editorEl, timeout) {
+        timeout = timeout || 4000;
         if (editorEl && editorEl.focus) {
             try { editorEl.focus(); } catch (e) {}
-            await new Promise(r => setTimeout(r, 200));
+            await sleep(200);
         }
         const start = Date.now();
-        while (Date.now() - start < timeoutMs) {
+        while (Date.now() - start < timeout) {
             const btn = findSendBtn(editorEl);
-            if (btn) {
-                btn.click();
-                return true;
-            }
-            await new Promise(r => setTimeout(r, 250));
+            if (btn) { btn.click(); return true; }
+            await sleep(250);
         }
-        if (editorEl) {
-            pressEnter(editorEl);
-            return true;
-        }
+        if (editorEl) { pressEnter(editorEl); return true; }
         return false;
     }
 
     function readLatest(selectors) {
         for (const sel of selectors) {
             const els = document.querySelectorAll(sel);
-            if (els.length === 0) continue;
-            let t = (els[els.length - 1].innerText || '').trim();
-            if (t.length > 0) {
-                t = t.replace(/\n{3,}/g, '\n\n');
-                return t;
-            }
+            if (!els.length) continue;
+            const t = (els[els.length - 1].innerText || '').trim().replace(/\n{3,}/g, '\n\n');
+            if (t) return t;
         }
         return '';
     }
 
     function pickImageSrc(img) {
         const link = img.closest('a');
-        if (link && link.href && /\.(jpg|jpeg|png|webp|gif)/i.test(link.href.split('?')[0])) {
-            return link.href;
-        }
-        const ds = img.getAttribute('data-src');
-        if (ds) return ds;
-        const dor = img.getAttribute('data-original');
-        if (dor) return dor;
-        return img.currentSrc || img.src || '';
+        if (link && link.href && /\.(jpg|jpeg|png|webp|gif)/i.test(link.href.split('?')[0])) return link.href;
+        return img.getAttribute('data-src') || img.getAttribute('data-original') || img.currentSrc || img.src || '';
     }
 
-    function extractImagesFrom(container) {
+    function extractImages(container) {
         if (!container) return [];
-        const imgs = container.querySelectorAll('img');
         const candidates = [];
-        for (const img of imgs) {
-            if (!img.complete) continue;
-            if (img.naturalWidth < 80 || img.naturalHeight < 80) continue;
+        for (const img of container.querySelectorAll('img')) {
+            if (!img.complete || img.naturalWidth < 80 || img.naturalHeight < 80) continue;
             const src = pickImageSrc(img);
-            if (!src) continue;
-            if (src.indexOf('blob:') === 0) continue;
-            if (src.indexOf('data:') === 0 && src.length < 500) continue;
+            if (!src || src.startsWith('blob:')) continue;
+            if (src.startsWith('data:') && src.length < 500) continue;
             if (/avatar|icon|emoji|logo|badge|gift|skeleton|placeholder|loading|spinner/i.test(src)) continue;
             if (/avatar|icon|emoji|logo|badge/i.test(img.className || '')) continue;
             const r = img.getBoundingClientRect();
             if (r.width < 30 || r.height < 30) continue;
             candidates.push({
-                src: src,
-                naturalArea: img.naturalWidth * img.naturalHeight,
+                src,
+                area: img.naturalWidth * img.naturalHeight,
                 left: r.left, top: r.top, right: r.right, bottom: r.bottom
             });
         }
-
         const groups = [];
         for (const c of candidates) {
             let placed = false;
             for (const g of groups) {
                 const ox = Math.max(0, Math.min(c.right, g.right) - Math.max(c.left, g.left));
                 const oy = Math.max(0, Math.min(c.bottom, g.bottom) - Math.max(c.top, g.top));
-                const oa = ox * oy;
-                const ca = (c.right - c.left) * (c.bottom - c.top);
-                const ga = (g.right - g.left) * (g.bottom - g.top);
-                const minA = Math.min(ca, ga);
-                if (minA > 0 && oa / minA > 0.5) {
-                    if (c.naturalArea > g.naturalArea) {
-                        g.src = c.src;
-                        g.naturalArea = c.naturalArea;
-                    }
+                const minA = Math.min((c.right - c.left) * (c.bottom - c.top), (g.right - g.left) * (g.bottom - g.top));
+                if (minA > 0 && ox * oy / minA > 0.5) {
+                    if (c.area > g.area) { g.src = c.src; g.area = c.area; }
                     placed = true;
                     break;
                 }
             }
-            if (!placed) {
-                groups.push({
-                    src: c.src,
-                    naturalArea: c.naturalArea,
-                    left: c.left, top: c.top, right: c.right, bottom: c.bottom
-                });
-            }
+            if (!placed) groups.push({ src: c.src, area: c.area, left: c.left, top: c.top, right: c.right, bottom: c.bottom });
         }
-        return groups.map(function (g) { return g.src; });
+        return groups.map(g => g.src);
     }
 
-    function getDoubaoReplyData() {
-        const text = readLatest([
-            '[data-testid="message_text_content"]',
-            '[class*="message-content"]',
-            '[class*="markdown-body"]'
-        ]);
+    function getReplyData() {
+        const text = readLatest(isDoubao
+            ? ['[data-testid="message_text_content"]', '[class*="message-content"]', '[class*="markdown-body"]']
+            : ['div[class*="ds-markdown"]', 'div[class*="markdown"]']);
         let images = [];
-        const textEls = document.querySelectorAll('[data-testid="message_text_content"]');
-        if (textEls.length > 0) {
-            let container = textEls[textEls.length - 1];
-            for (let i = 0; i < 6 && container; i++) {
-                images = extractImagesFrom(container);
-                if (images.length > 0) break;
-                container = container.parentElement;
+        if (isDoubao) {
+            const els = document.querySelectorAll('[data-testid="message_text_content"]');
+            if (els.length) {
+                let c = els[els.length - 1];
+                for (let i = 0; i < 6 && c; i++) {
+                    images = extractImages(c);
+                    if (images.length) break;
+                    c = c.parentElement;
+                }
             }
-        }
-        if (images.length === 0) {
-            const rows = document.querySelectorAll('[class*="message-row"], [class*="chat-message"], [class*="message"]');
-            if (rows.length > 0) {
-                images = extractImagesFrom(rows[rows.length - 1]);
+            if (!images.length) {
+                const rows = document.querySelectorAll('[class*="message-row"], [class*="chat-message"], [class*="message"]');
+                if (rows.length) images = extractImages(rows[rows.length - 1]);
             }
+        } else {
+            const els = document.querySelectorAll('div[class*="ds-markdown"]');
+            if (els.length) images = extractImages(els[els.length - 1]);
         }
-        return { text: text, images: images };
+        return { text, images };
     }
 
-    function getDsReplyData() {
-        const text = readLatest([
-            'div[class*="ds-markdown"]',
-            'div[class*="markdown"]'
-        ]);
-        let images = [];
-        const mdEls = document.querySelectorAll('div[class*="ds-markdown"]');
-        if (mdEls.length > 0) {
-            images = extractImagesFrom(mdEls[mdEls.length - 1]);
-        }
-        return { text: text, images: images };
-    }
+    const getMyInputBox = () => isDoubao
+        ? document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea')
+        : document.querySelector('textarea#chat-input') || document.querySelector('textarea');
 
     GM_addStyle(`
         #wechat-ai-ui { position: fixed; right: 8px; bottom: 8px; width: 92vw; max-width: 400px; height: 60vh; max-height: 520px; background: #f5f5f5; border: 1px solid #ddd; border-radius: 10px; z-index: 99999; display: flex; flex-direction: column; font-family: -apple-system, sans-serif; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,0.15); overflow: hidden; color: #222 !important; }
-        #wechat-ai-ui.wechat-ai-anim { transition: left 0.22s ease, top 0.22s ease, width 0.22s ease, height 0.22s ease, border-radius 0.22s ease; }
+        #wechat-ai-ui.wechat-ai-anim { transition: left ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), top ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), width ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), height ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), border-radius ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), background ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), box-shadow ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1); }
+        #wechat-ai-ui.wechat-ai-gesture { will-change: left, top, width, height; }
+        #wechat-ai-ui.wechat-ai-snap-left { box-shadow: inset 4px 0 0 #07c160, 0 4px 16px rgba(0,0,0,0.15) !important; }
+        #wechat-ai-ui.wechat-ai-snap-right { box-shadow: inset -4px 0 0 #07c160, 0 4px 16px rgba(0,0,0,0.15) !important; }
         #wechat-ai-dragbar { height: 32px; background: #e8e8e8; display: flex; align-items: center; padding: 0 4px 0 8px; font-size: 12px; color: #666 !important; cursor: move; user-select: none; border-bottom: 1px solid #ddd; flex-shrink: 0; touch-action: none; }
         #wechat-ai-dragzone { flex: 1; text-align: center; pointer-events: none; color: #666 !important; }
         #wechat-ai-winbtns { display: flex; gap: 2px; flex-shrink: 0; }
@@ -485,171 +405,267 @@
         #wechat-ai-toggle { position: fixed; right: 8px; bottom: 8px; width: 48px; height: 48px; border-radius: 50%; background: #07c160; color: #fff !important; border: none; font-size: 20px; z-index: 99999; cursor: pointer; display: none; }
         #wechat-ai-resize { position: absolute; right: 0; bottom: 0; width: 28px; height: 28px; cursor: nwse-resize; touch-action: none; z-index: 10; background: linear-gradient(135deg, transparent 52%, rgba(120,120,120,0.5) 52%, rgba(120,120,120,0.7) 100%); border-radius: 0 0 10px 0; -webkit-tap-highlight-color: transparent; }
         #wechat-ai-resize.wechat-ai-resizing { background: linear-gradient(135deg, transparent 52%, rgba(7,193,96,0.6) 52%, rgba(7,193,96,0.85) 100%); }
-        #wechat-ai-bg-menu { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); background: #fff; border-radius: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.25); padding: 8px; z-index: 100001; display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
+        #wechat-ai-bg-menu { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); background: #fff; border-radius: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.25); padding: 8px; z-index: 100001; display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
         #wechat-ai-bg-menu button { border: none; background: transparent; padding: 12px 16px; font-size: 14px; color: #333 !important; cursor: pointer; border-radius: 6px; text-align: center; font-family: inherit; }
         #wechat-ai-bg-menu button:active { background: #f0f0f0; }
         #wechat-ai-bg-mask { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.25); z-index: 100000; }
     `);
 
-    let panelState = 'normal';
-    let normalRect = null;
-    let renderedCount = 0;
+    let state = 'normal';
+    let savedRect = null;
+    let rendered = 0;
 
-    function readRect(panel) {
-        const r = panel.getBoundingClientRect();
+    function readRect(el) {
+        const r = el.getBoundingClientRect();
         return { left: r.left, top: r.top, width: r.width, height: r.height };
     }
 
-    function applyRect(panel, rect, animate) {
-        if (!rect) return;
-        if (animate) panel.classList.add('wechat-ai-anim');
-        panel.style.right = 'auto';
-        panel.style.bottom = 'auto';
-        panel.style.left = rect.left + 'px';
-        panel.style.top = rect.top + 'px';
-        panel.style.width = rect.width + 'px';
-        panel.style.height = rect.height + 'px';
-        panel.style.maxWidth = 'none';
-        panel.style.maxHeight = 'none';
-        if (animate) setTimeout(function () { panel.classList.remove('wechat-ai-anim'); }, 260);
-    }
-
-    function updateWinBtns() {
-        const minBtn = document.getElementById('wechat-ai-min');
-        const maxBtn = document.getElementById('wechat-ai-max');
-        if (!minBtn || !maxBtn) return;
-        minBtn.textContent = panelState === 'min' ? '▣' : '—';
-        maxBtn.textContent = panelState === 'max' ? '❐' : '□';
-    }
-
-    function hideInnerElements() {
-        ['wechat-ai-dragbar', 'wechat-ai-refresh-bar', 'wechat-ai-messages', 'wechat-ai-input-area', 'wechat-ai-resize'].forEach(function (id) {
-            const el = document.getElementById(id);
-            if (el) el.style.display = 'none';
+    function applyRect(el, r, animate) {
+        if (!r) return;
+        if (animate) el.classList.add('wechat-ai-anim');
+        Object.assign(el.style, {
+            right: 'auto', bottom: 'auto', maxWidth: 'none', maxHeight: 'none',
+            left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px'
         });
+        if (animate) setTimeout(() => el.classList.remove('wechat-ai-anim'), ANIM_MS + 20);
     }
 
-    function showInnerElements() {
-        ['wechat-ai-dragbar', 'wechat-ai-refresh-bar', 'wechat-ai-messages', 'wechat-ai-input-area', 'wechat-ai-resize'].forEach(function (id) {
-            const el = document.getElementById(id);
-            if (el) el.style.display = '';
-        });
+    function setInnerVisible(v) {
+        ['wechat-ai-dragbar', 'wechat-ai-refresh-bar', 'wechat-ai-messages', 'wechat-ai-input-area', 'wechat-ai-resize']
+            .forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = v ? '' : 'none';
+            });
     }
 
-    function snapToEdge(panel, side) {
-        panelState = side === 'left' ? 'min-edge-left' : 'min-edge-right';
-        updateWinBtns();
+    function updateBtns() {
+        const min = document.getElementById('wechat-ai-min');
+        const max = document.getElementById('wechat-ai-max');
+        if (!min || !max) return;
+        min.textContent = (state === 'min' || state === 'edge-l' || state === 'edge-r') ? '▣' : '—';
+        max.textContent = state === 'max' ? '❐' : '□';
+    }
 
+    const setState = next => { state = next; updateBtns(); };
+
+    function computeSnap(left, width) {
+        if (state === 'min') {
+            if (left < MIN_SNAP_PX) return 'left';
+            if (left + width > window.innerWidth - MIN_SNAP_PX) return 'right';
+        } else if (state === 'normal') {
+            if (-left >= width / 3) return 'left';
+            if (left + width - window.innerWidth >= width / 3) return 'right';
+        }
+        return null;
+    }
+
+    function clearSnapHints(el) {
+        el.classList.remove('wechat-ai-snap-left', 'wechat-ai-snap-right');
+    }
+
+    function snapToEdge(el, side) {
+        clearSnapHints(el);
+        setState(side === 'left' ? 'edge-l' : 'edge-r');
         const vh = window.innerHeight;
         const h = Math.min(vh * 0.5, 320);
         const top = Math.max(20, (vh - h) / 2);
-
-        panel.classList.add('wechat-ai-anim');
-
-        if (side === 'left') {
-            panel.style.left = '0px';
-            panel.style.right = 'auto';
-            panel.style.borderRadius = '0 6px 6px 0';
-        } else {
-            panel.style.right = '0px';
-            panel.style.left = 'auto';
-            panel.style.borderRadius = '6px 0 0 6px';
-        }
-        panel.style.width = '8px';
-        panel.style.top = top + 'px';
-        panel.style.height = h + 'px';
-        panel.style.background = 'rgba(7, 193, 96, 0.55)';
-        panel.style.border = 'none';
-        panel.style.boxShadow = '0 0 8px rgba(7, 193, 96, 0.35)';
-        panel.style.maxWidth = 'none';
-        panel.style.maxHeight = 'none';
-        panel.style.cursor = 'pointer';
-        panel.style.touchAction = 'none';
-
-        hideInnerElements();
-
-        setTimeout(function () { panel.classList.remove('wechat-ai-anim'); }, 260);
+        el.classList.add('wechat-ai-anim');
+        Object.assign(el.style, {
+            width: '8px', top: top + 'px', height: h + 'px',
+            borderRadius: side === 'left' ? '0 6px 6px 0' : '6px 0 0 6px',
+            background: 'rgba(7,193,96,0.55)', border: 'none',
+            boxShadow: '0 0 8px rgba(7,193,96,0.35)',
+            maxWidth: 'none', maxHeight: 'none', cursor: 'pointer', touchAction: 'none'
+        });
+        if (side === 'left') { el.style.left = '0px'; el.style.right = 'auto'; }
+        else { el.style.right = '0px'; el.style.left = 'auto'; }
+        setInnerVisible(false);
+        setTimeout(() => el.classList.remove('wechat-ai-anim'), ANIM_MS + 20);
     }
 
-    function restoreFromEdge(panel, animate) {
-        showInnerElements();
-        panel.style.background = '#f5f5f5';
-        panel.style.border = '1px solid #ddd';
-        panel.style.boxShadow = '0 4px 16px rgba(0,0,0,0.15)';
-        panel.style.borderRadius = '10px';
-        panel.style.cursor = '';
-        panel.style.touchAction = '';
-        panelState = 'normal';
-
-        if (animate) {
-            applyRect(panel, normalRect, true);
-        } else {
-            panel.classList.remove('wechat-ai-anim');
-            if (normalRect) {
-                panel.style.left = normalRect.left + 'px';
-                panel.style.top = normalRect.top + 'px';
-                panel.style.width = normalRect.width + 'px';
-                panel.style.height = normalRect.height + 'px';
-            }
-            panel.style.right = 'auto';
-            panel.style.bottom = 'auto';
-            panel.style.maxWidth = 'none';
-            panel.style.maxHeight = 'none';
-        }
-        updateWinBtns();
+    function restoreFromEdge(el, animate) {
+        setInnerVisible(true);
+        clearSnapHints(el);
+        Object.assign(el.style, {
+            background: '#f5f5f5', border: '1px solid #ddd',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.15)', borderRadius: '10px',
+            cursor: '', touchAction: ''
+        });
+        setState('normal');
+        el.classList.remove('wechat-ai-anim');
+        applyRect(el, savedRect, animate);
     }
 
-    function toggleMin(panel) {
-        if (panelState === 'min-edge-left' || panelState === 'min-edge-right') {
-            restoreFromEdge(panel, true);
+    function toggleMin(el) {
+        clearSnapHints(el);
+        if (state === 'edge-l' || state === 'edge-r') return restoreFromEdge(el, true);
+        if (state === 'min') {
+            applyRect(el, savedRect, true);
+            setState('normal');
             return;
         }
-        if (panelState === 'min') {
-            applyRect(panel, normalRect, true);
-            panelState = 'normal';
-        } else {
-            if (panelState === 'normal') {
-                normalRect = readRect(panel);
-            }
-            panel.classList.add('wechat-ai-anim');
-            panel.style.right = 'auto';
-            panel.style.bottom = 'auto';
-            panel.style.left = normalRect.left + 'px';
-            panel.style.top = normalRect.top + 'px';
-            panel.style.width = normalRect.width + 'px';
-            panel.style.height = '32px';
-            panel.style.maxWidth = 'none';
-            panel.style.maxHeight = 'none';
-            panelState = 'min';
-            setTimeout(function () { panel.classList.remove('wechat-ai-anim'); }, 260);
-        }
-        updateWinBtns();
+        if (state === 'normal') savedRect = readRect(el);
+        el.classList.add('wechat-ai-anim');
+        Object.assign(el.style, {
+            right: 'auto', bottom: 'auto',
+            left: savedRect.left + 'px', top: savedRect.top + 'px',
+            width: savedRect.width + 'px', height: '32px',
+            maxWidth: 'none', maxHeight: 'none'
+        });
+        setState('min');
+        setTimeout(() => el.classList.remove('wechat-ai-anim'), ANIM_MS + 20);
     }
 
-    function toggleMax(panel) {
-        if (panelState === 'min-edge-left' || panelState === 'min-edge-right') {
-            restoreFromEdge(panel, false);
+    function toggleMax(el) {
+        clearSnapHints(el);
+        if (state === 'edge-l' || state === 'edge-r') restoreFromEdge(el, false);
+        if (state === 'max') {
+            applyRect(el, savedRect, true);
+            setState('normal');
+            return;
         }
-        if (panelState === 'max') {
-            applyRect(panel, normalRect, true);
-            panelState = 'normal';
-        } else {
-            if (panelState === 'normal') {
-                normalRect = readRect(panel);
+        if (state === 'normal') savedRect = readRect(el);
+        el.classList.add('wechat-ai-anim');
+        Object.assign(el.style, {
+            right: 'auto', bottom: 'auto', left: '4px', top: '4px',
+            width: (window.innerWidth - 8) + 'px', height: (window.innerHeight - 8) + 'px',
+            maxWidth: 'none', maxHeight: 'none'
+        });
+        setState('max');
+        setTimeout(() => el.classList.remove('wechat-ai-anim'), ANIM_MS + 20);
+    }
+
+    function bindGesture(handle, panel, handlers) {
+        let active = false;
+        let lastX = 0, lastY = 0;
+        let rafPending = false;
+
+        const flushMove = () => {
+            rafPending = false;
+            if (active) handlers.move(lastX, lastY);
+        };
+
+        const onMove = (x, y) => {
+            lastX = x; lastY = y;
+            if (!rafPending && active) {
+                rafPending = true;
+                requestAnimationFrame(flushMove);
             }
-            panel.classList.add('wechat-ai-anim');
-            panel.style.right = 'auto';
-            panel.style.bottom = 'auto';
-            panel.style.left = '4px';
-            panel.style.top = '4px';
-            panel.style.width = (window.innerWidth - 8) + 'px';
-            panel.style.height = (window.innerHeight - 8) + 'px';
-            panel.style.maxWidth = 'none';
-            panel.style.maxHeight = 'none';
-            panelState = 'max';
-            setTimeout(function () { panel.classList.remove('wechat-ai-anim'); }, 260);
-        }
-        updateWinBtns();
+        };
+
+        const down = (x, y) => {
+            if (handlers.start(x, y) === false) return;
+            active = true;
+            lastX = x; lastY = y;
+            panel.classList.add('wechat-ai-gesture');
+        };
+
+        const up = () => {
+            if (!active) return;
+            if (rafPending) {
+                cancelAnimationFrame(flushMove);
+                flushMove();
+            }
+            active = false;
+            panel.classList.remove('wechat-ai-gesture');
+            clearSnapHints(panel);
+            if (handlers.end) handlers.end();
+        };
+
+        handle.addEventListener('touchstart', e => down(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+        handle.addEventListener('touchmove', e => {
+            if (!active) return;
+            onMove(e.touches[0].clientX, e.touches[0].clientY);
+            if (e.cancelable) e.preventDefault();
+        }, { passive: false });
+        handle.addEventListener('touchend', up);
+        handle.addEventListener('touchcancel', up);
+        handle.addEventListener('mousedown', e => down(e.clientX, e.clientY));
+        document.addEventListener('mousemove', e => { if (active) onMove(e.clientX, e.clientY); });
+        document.addEventListener('mouseup', up);
+    }
+
+    function enableDrag(el, handle) {
+        let sx = 0, sy = 0, sl = 0, st = 0, w0 = 0;
+        bindGesture(handle, el, {
+            start(x, y) {
+                clearSnapHints(el);
+                if (state === 'edge-l' || state === 'edge-r') restoreFromEdge(el, false);
+                if (state === 'max') setState('normal');
+                const r = readRect(el);
+                sx = x; sy = y; sl = r.left; st = r.top; w0 = r.width;
+                if (state === 'normal') savedRect = { left: r.left, top: r.top, width: r.width, height: r.height };
+                else if (state === 'min' && savedRect) { savedRect.left = r.left; savedRect.top = r.top; }
+                el.classList.remove('wechat-ai-anim');
+                Object.assign(el.style, { right: 'auto', bottom: 'auto', left: sl + 'px', top: st + 'px' });
+            },
+            move(x, y) {
+                let nl = sl + (x - sx);
+                let nt = st + (y - sy);
+                if (state === 'min') nl = Math.max(0, Math.min(window.innerWidth - Math.min(w0, 60), nl));
+                else nl = Math.max(-w0, Math.min(window.innerWidth, nl));
+                nt = Math.max(0, Math.min(window.innerHeight - 32, nt));
+                el.style.left = nl + 'px';
+                el.style.top = nt + 'px';
+                const hint = computeSnap(nl, w0);
+                el.classList.toggle('wechat-ai-snap-left', hint === 'left');
+                el.classList.toggle('wechat-ai-snap-right', hint === 'right');
+            },
+            end() {
+                const r = readRect(el);
+                const side = computeSnap(r.left, r.width);
+                if (side) return snapToEdge(el, side);
+                if (state === 'min') {
+                    if (savedRect) { savedRect.left = r.left; savedRect.top = r.top; }
+                } else if (state === 'normal') {
+                    const w = r.width;
+                    let fl = r.left;
+                    if (fl < 0) fl = 0;
+                    if (fl + w > window.innerWidth) fl = Math.max(0, window.innerWidth - w);
+                    if (fl !== r.left) el.style.left = fl + 'px';
+                    if (savedRect) { savedRect.left = fl; savedRect.top = r.top; }
+                }
+            }
+        });
+        handle.addEventListener('dblclick', e => { e.preventDefault(); toggleMax(el); });
+        el.addEventListener('click', e => {
+            if (state === 'edge-l' || state === 'edge-r') {
+                e.preventDefault();
+                e.stopPropagation();
+                restoreFromEdge(el, true);
+            }
+        }, true);
+    }
+
+    function enableResize(el, handle) {
+        let sx = 0, sy = 0, sw = 0, sh = 0, sl = 0, st = 0;
+        bindGesture(handle, el, {
+            start(x, y) {
+                if (state === 'edge-l' || state === 'edge-r') return false;
+                if (state === 'max') setState('normal');
+                if (state === 'min') toggleMin(el);
+                const r = readRect(el);
+                sx = x; sy = y; sw = r.width; sh = r.height; sl = r.left; st = r.top;
+                savedRect = { left: r.left, top: r.top, width: r.width, height: r.height };
+                el.classList.remove('wechat-ai-anim');
+                Object.assign(el.style, {
+                    right: 'auto', bottom: 'auto', left: sl + 'px', top: st + 'px',
+                    width: sw + 'px', height: sh + 'px', maxWidth: 'none', maxHeight: 'none'
+                });
+                handle.classList.add('wechat-ai-resizing');
+            },
+            move(x, y) {
+                const minW = 240, minH = 120;
+                const maxW = Math.max(minW, window.innerWidth - sl - 8);
+                const maxH = Math.max(minH, window.innerHeight - st - 8);
+                const w = Math.max(minW, Math.min(maxW, sw + (x - sx)));
+                const h = Math.max(minH, Math.min(maxH, sh + (y - sy)));
+                el.style.width = w + 'px';
+                el.style.height = h + 'px';
+                if (savedRect) { savedRect.width = w; savedRect.height = h; }
+            },
+            end() { handle.classList.remove('wechat-ai-resizing'); }
+        });
     }
 
     function openImageFull(src) {
@@ -663,9 +679,7 @@
     function renderMessage(msg) {
         const c = document.getElementById('wechat-ai-messages');
         if (!c) return;
-        const who = msg.who;
-        const text = msg.text || '';
-        const images = msg.images || [];
+        const { who, text, images } = msg;
 
         if (who === 'system') {
             const s = document.createElement('div');
@@ -681,28 +695,22 @@
         row.className = 'wechat-ai-row wechat-ai-' + who + (who === 'user' ? ' wechat-ai-right' : '');
         const av = document.createElement('div');
         av.className = 'wechat-ai-avatar';
-        if (cfg.img) { av.style.backgroundImage = 'url("' + cfg.img + '")'; }
+        if (cfg.img) av.style.backgroundImage = `url("${cfg.img}")`;
         else { av.style.backgroundColor = cfg.bg; av.textContent = cfg.text; }
-        av.addEventListener('click', function () { pickAvatar(who, av); });
+        av.addEventListener('click', () => pickAvatar(who, av));
         const b = document.createElement('div');
         b.className = 'wechat-ai-bubble';
 
         const cleanText = (text || '').replace(/\n{3,}/g, '\n\n').trim();
         const uniq = [];
         if (images && images.length) {
-            const seenSrc = {};
-            for (const src of images) {
-                if (seenSrc[src]) continue;
-                seenSrc[src] = true;
-                uniq.push(src);
-            }
+            const seen = {};
+            for (const s of images) if (!seen[s]) { seen[s] = true; uniq.push(s); }
         }
 
         const hasText = cleanText.length > 0;
         const hasImages = uniq.length > 0;
-        if (!hasText && hasImages) {
-            b.className += ' wechat-ai-image-only';
-        }
+        if (!hasText && hasImages) b.className += ' wechat-ai-image-only';
         if (hasText) {
             const t = document.createElement('div');
             t.textContent = cleanText;
@@ -713,29 +721,23 @@
                 const img = document.createElement('img');
                 img.className = 'wechat-ai-img' + (who === 'user' ? ' wechat-ai-img-small' : '');
                 img.src = src;
-                img.addEventListener('click', function (e) {
-                    e.stopPropagation();
-                    openImageFull(src);
-                });
-                img.onload = function () { c.scrollTop = c.scrollHeight; };
-                img.onerror = function () {
-                    if (img.parentNode) img.parentNode.removeChild(img);
-                };
+                img.addEventListener('click', e => { e.stopPropagation(); openImageFull(src); });
+                img.onload = () => { c.scrollTop = c.scrollHeight; };
+                img.onerror = () => img.remove();
                 b.appendChild(img);
             }
         }
-        row.appendChild(av); row.appendChild(b);
+        row.appendChild(av);
+        row.appendChild(b);
         c.appendChild(row);
         c.scrollTop = c.scrollHeight;
     }
 
-    function flushMessages() {
+    function flush() {
         const msgs = getMessages();
-        if (msgs.length > renderedCount) {
-            for (let i = renderedCount; i < msgs.length; i++) {
-                renderMessage(msgs[i]);
-            }
-            renderedCount = msgs.length;
+        if (msgs.length > rendered) {
+            for (let i = rendered; i < msgs.length; i++) renderMessage(msgs[i]);
+            rendered = msgs.length;
         }
     }
 
@@ -745,187 +747,77 @@
         if (!text) return;
         inp.value = '';
         inp.blur();
-        await new Promise(r => setTimeout(r, 50));
+        await sleep(50);
 
-        const oldSession = getSession();
-        if (oldSession.active && oldSession.round > 0) {
-            pushMessage('system', '上一轮对话尚未结束，已重置为新对话');
-            flushMessages();
+        const old = getSession();
+        if (old.active && old.round > 0) {
+            pushMessage('system', '上一轮尚未结束，已重置为新对话');
+            flush();
         }
-
-        setSession({
-            round: 0,
-            maxRounds: DEFAULT_MAX_ROUNDS,
-            maxChars: DEFAULT_MAX_CHARS,
-            active: true
-        });
-
+        resetSession();
         pushMessage('user', text);
-        flushMessages();
-
-        GM_setValue(KEY_USER_MSG, JSON.stringify({ text: text, ts: Date.now() }));
-    }
-
-    function pickUserImage() {
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = 'image/*';
-        input.style.display = 'none';
-        document.body.appendChild(input);
-        input.onchange = async function () {
-            const file = input.files && input.files[0];
-            if (file) {
-                try {
-                    const dataUrl = await resizeImage(file, 480, 0.7);
-                    
-                    setSession({
-                        round: 0,
-                        maxRounds: DEFAULT_MAX_ROUNDS,
-                        maxChars: DEFAULT_MAX_CHARS,
-                        active: true
-                    });
-                    
-                    pushMessage('user', '', [dataUrl]);
-                    flushMessages();
-                    GM_setValue(KEY_USER_MSG, JSON.stringify({
-                        text: '[用户上传了一张图片]',
-                        image: dataUrl,
-                        ts: Date.now()
-                    }));
-                } catch (e) {}
-            }
-            if (input.parentNode) input.parentNode.removeChild(input);
-        };
-        input.click();
-    }
-
-    function applyBackground(messagesEl, dataUrl) {
-        messagesEl.style.backgroundImage = 'url("' + dataUrl + '")';
-    }
-
-    function clearBackground(messagesEl) {
-        messagesEl.style.backgroundImage = '';
-        GM_setValue(KEY_BG, '');
-    }
-
-    function pickBackground() {
-        const messagesEl = document.getElementById('wechat-ai-messages');
-        if (!messagesEl) return;
-        const input = document.createElement('input');
-        input.type = 'file';
-        input.accept = 'image/*';
-        input.style.display = 'none';
-        document.body.appendChild(input);
-        input.onchange = async function () {
-            const file = input.files && input.files[0];
-            if (file) {
-                try {
-                    const dataUrl = await resizeImage(file, 1280, 0.75);
-                    GM_setValue(KEY_BG, dataUrl);
-                    applyBackground(messagesEl, dataUrl);
-                } catch (e) {}
-            }
-            if (input.parentNode) input.parentNode.removeChild(input);
-        };
-        input.click();
+        flush();
+        GM_setValue(K.USER, JSON.stringify({ text, ts: Date.now(), source: myRole }));
     }
 
     function showBgMenu() {
-        const oldMask = document.getElementById('wechat-ai-bg-mask');
-        const oldMenu = document.getElementById('wechat-ai-bg-menu');
-        if (oldMask) oldMask.remove();
-        if (oldMenu) oldMenu.remove();
-
+        ['wechat-ai-bg-mask', 'wechat-ai-bg-menu'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.remove();
+        });
         const mask = document.createElement('div');
         mask.id = 'wechat-ai-bg-mask';
         document.body.appendChild(mask);
-
         const menu = document.createElement('div');
         menu.id = 'wechat-ai-bg-menu';
-        menu.innerHTML = `
-            <button data-action="change">更换背景</button>
-            <button data-action="clear">恢复默认</button>
-            <button data-action="cancel">取消</button>
-        `;
+        menu.innerHTML = '<button data-action="change">更换背景</button><button data-action="clear">恢复默认</button><button data-action="cancel">取消</button>';
         document.body.appendChild(menu);
-
-        function close() {
-            if (mask.parentNode) mask.parentNode.removeChild(mask);
-            if (menu.parentNode) menu.parentNode.removeChild(menu);
-        }
-
+        const close = () => { mask.remove(); menu.remove(); };
         mask.addEventListener('click', close);
-
-        menu.addEventListener('click', function (e) {
+        menu.addEventListener('click', e => {
             const btn = e.target.closest('button');
             if (!btn) return;
             const action = btn.getAttribute('data-action');
             close();
-            const messagesEl = document.getElementById('wechat-ai-messages');
-            if (action === 'change') {
-                pickBackground();
-            } else if (action === 'clear') {
-                if (messagesEl) clearBackground(messagesEl);
+            if (action === 'change') pickBackground();
+            else if (action === 'clear') {
+                const el = document.getElementById('wechat-ai-messages');
+                if (el) { el.style.backgroundImage = ''; GM_setValue(K.BG, ''); }
             }
         });
     }
 
     function setupBgPicker() {
-        const messagesEl = document.getElementById('wechat-ai-messages');
-        if (!messagesEl) return;
+        const el = document.getElementById('wechat-ai-messages');
+        if (!el) return;
+        const saved = GM_getValue(K.BG);
+        if (saved) el.style.backgroundImage = `url("${saved}")`;
 
-        const savedBg = GM_getValue(KEY_BG);
-        if (savedBg) applyBackground(messagesEl, savedBg);
-
-        let longPressTimer = null;
-        let startX = 0, startY = 0;
-        let triggered = false;
-
-        function isBlankArea(target) {
-            if (!target) return false;
-            if (target.closest('.wechat-ai-avatar')) return false;
-            if (target.closest('.wechat-ai-bubble')) return false;
-            return true;
-        }
-
-        function onStart(e) {
-            if (!isBlankArea(e.target)) return;
+        let timer = null, sx = 0, sy = 0;
+        const isBlank = t => t && !t.closest('.wechat-ai-avatar') && !t.closest('.wechat-ai-bubble');
+        const start = e => {
+            if (!isBlank(e.target)) return;
             const t = e.touches ? e.touches[0] : e;
-            startX = t.clientX;
-            startY = t.clientY;
-            triggered = false;
-            if (longPressTimer) clearTimeout(longPressTimer);
-            longPressTimer = setTimeout(function () {
-                longPressTimer = null;
-                triggered = true;
-                showBgMenu();
-            }, 600);
-        }
-
-        function onMove(e) {
-            if (!longPressTimer) return;
+            sx = t.clientX; sy = t.clientY;
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => { timer = null; showBgMenu(); }, 600);
+        };
+        const move = e => {
+            if (!timer) return;
             const t = e.touches ? e.touches[0] : e;
-            if (Math.abs(t.clientX - startX) > 10 || Math.abs(t.clientY - startY) > 10) {
-                clearTimeout(longPressTimer);
-                longPressTimer = null;
+            if (Math.abs(t.clientX - sx) > 10 || Math.abs(t.clientY - sy) > 10) {
+                clearTimeout(timer); timer = null;
             }
-        }
+        };
+        const end = () => { if (timer) { clearTimeout(timer); timer = null; } };
 
-        function onEnd() {
-            if (longPressTimer) {
-                clearTimeout(longPressTimer);
-                longPressTimer = null;
-            }
-            if (triggered) triggered = false;
-        }
-
-        messagesEl.addEventListener('touchstart', onStart, { passive: true });
-        messagesEl.addEventListener('touchmove', onMove, { passive: true });
-        messagesEl.addEventListener('touchend', onEnd);
-        messagesEl.addEventListener('touchcancel', onEnd);
-        messagesEl.addEventListener('mousedown', onStart);
-        messagesEl.addEventListener('mousemove', onMove);
-        messagesEl.addEventListener('mouseup', onEnd);
+        el.addEventListener('touchstart', start, { passive: true });
+        el.addEventListener('touchmove', move, { passive: true });
+        el.addEventListener('touchend', end);
+        el.addEventListener('touchcancel', end);
+        el.addEventListener('mousedown', start);
+        el.addEventListener('mousemove', move);
+        el.addEventListener('mouseup', end);
     }
 
     function setupPullToRefresh() {
@@ -935,65 +827,42 @@
         const scroller = document.getElementById('wechat-ai-messages');
         if (!bar || !text || !icon || !scroller) return;
 
-        const THRESHOLD = 60;
-        const MAX_PULL = 100;
-        let startY = 0;
-        let pulling = false;
-        let refreshing = false;
+        const THRESHOLD = 60, MAX_PULL = 100;
+        let startY = 0, pulling = false, refreshing = false;
 
-        function onStart(e) {
-            if (refreshing) return;
-            if (scroller.scrollTop > 0) return;
+        scroller.addEventListener('touchstart', e => {
+            if (refreshing || scroller.scrollTop > 0) return;
             startY = e.touches[0].clientY;
             pulling = true;
             bar.classList.add('wechat-ai-pulling');
-        }
-
-        function onMove(e) {
+        }, { passive: true });
+        scroller.addEventListener('touchmove', e => {
             if (!pulling || refreshing) return;
             const dy = e.touches[0].clientY - startY;
-            if (dy <= 0) {
-                bar.style.height = '0px';
-                text.textContent = '下拉刷新';
-                return;
-            }
+            if (dy <= 0) { bar.style.height = '0px'; text.textContent = '下拉刷新'; return; }
             if (e.cancelable) e.preventDefault();
             const dist = Math.min(dy * 0.6, MAX_PULL);
             bar.style.height = dist + 'px';
-            if (dist >= THRESHOLD) {
-                text.textContent = '松开刷新';
-            } else {
-                text.textContent = '下拉刷新';
-            }
-        }
-
-        function onEnd() {
+            text.textContent = dist >= THRESHOLD ? '松开刷新' : '下拉刷新';
+        }, { passive: false });
+        const end = () => {
             if (!pulling) return;
             pulling = false;
             bar.classList.remove('wechat-ai-pulling');
             if (refreshing) return;
             const h = parseFloat(bar.style.height) || 0;
             if (h >= THRESHOLD) {
-                startRefresh();
+                refreshing = true;
+                bar.style.height = '40px';
+                icon.classList.add('wechat-ai-spinning');
+                text.textContent = '正在刷新';
+                setTimeout(() => { try { location.reload(); } catch (e) {} }, 500);
             } else {
                 bar.style.height = '0px';
             }
-        }
-
-        function startRefresh() {
-            refreshing = true;
-            bar.style.height = '40px';
-            icon.classList.add('wechat-ai-spinning');
-            text.textContent = '正在刷新';
-            setTimeout(function () {
-                try { location.reload(); } catch (e) {}
-            }, 500);
-        }
-
-        scroller.addEventListener('touchstart', onStart, { passive: true });
-        scroller.addEventListener('touchmove', onMove, { passive: false });
-        scroller.addEventListener('touchend', onEnd);
-        scroller.addEventListener('touchcancel', onEnd);
+        };
+        scroller.addEventListener('touchend', end);
+        scroller.addEventListener('touchcancel', end);
     }
 
     function createUI() {
@@ -1023,484 +892,230 @@
             <div id="wechat-ai-resize"></div>
         `;
         document.body.appendChild(div);
+
         const toggle = document.createElement('button');
         toggle.id = 'wechat-ai-toggle';
         toggle.textContent = '💬';
         document.body.appendChild(toggle);
-        toggle.onclick = function () {
-            div.style.display = 'flex';
-            toggle.style.display = 'none';
-        };
+        toggle.onclick = () => { div.style.display = 'flex'; toggle.style.display = 'none'; };
+
         document.getElementById('wechat-ai-send').onclick = sendUserMessage;
         document.getElementById('wechat-ai-plus').onclick = pickUserImage;
-        document.getElementById('wechat-ai-input').addEventListener('keydown', function (e) {
+        document.getElementById('wechat-ai-input').addEventListener('keydown', e => {
             if (e.key === 'Enter') sendUserMessage();
         });
 
         const minBtn = document.getElementById('wechat-ai-min');
         const maxBtn = document.getElementById('wechat-ai-max');
-        minBtn.addEventListener('touchstart', function (e) { e.stopPropagation(); }, { passive: true });
-        minBtn.addEventListener('mousedown', function (e) { e.stopPropagation(); });
-        maxBtn.addEventListener('touchstart', function (e) { e.stopPropagation(); }, { passive: true });
-        maxBtn.addEventListener('mousedown', function (e) { e.stopPropagation(); });
-        minBtn.addEventListener('click', function () { toggleMin(div); });
-        maxBtn.addEventListener('click', function () { toggleMax(div); });
+        [minBtn, maxBtn].forEach(b => {
+            b.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+            b.addEventListener('mousedown', e => e.stopPropagation());
+        });
+        minBtn.addEventListener('click', () => toggleMin(div));
+        maxBtn.addEventListener('click', () => toggleMax(div));
 
         enableDrag(div, document.getElementById('wechat-ai-dragbar'));
         enableResize(div, document.getElementById('wechat-ai-resize'));
         setupPullToRefresh();
         setupBgPicker();
-        updateWinBtns();
+        updateBtns();
 
-        window.addEventListener('resize', function () {
+        window.addEventListener('resize', () => {
             if (div.style.display === 'none') return;
-            if (panelState === 'min-edge-left' || panelState === 'min-edge-right') {
+            if (state === 'edge-l' || state === 'edge-r') {
                 const vh = window.innerHeight;
                 const h = Math.min(vh * 0.5, 320);
-                const top = Math.max(20, (vh - h) / 2);
-                div.style.top = top + 'px';
+                div.style.top = Math.max(20, (vh - h) / 2) + 'px';
                 div.style.height = h + 'px';
                 return;
             }
-            if (panelState !== 'normal') return;
-            const r = div.getBoundingClientRect();
-            let nl = r.left, nt = r.top, nw = r.width, nh = r.height;
-            let changed = false;
-            if (nl + nw > window.innerWidth - 4) {
-                nw = Math.max(240, window.innerWidth - nl - 8);
-                changed = true;
-            }
-            if (nt + nh > window.innerHeight - 4) {
-                nh = Math.max(120, window.innerHeight - nt - 8);
-                changed = true;
-            }
-            if (nl + nw > window.innerWidth - 4) {
-                nl = Math.max(0, window.innerWidth - nw - 8);
-                changed = true;
-            }
-            if (nt + nh > window.innerHeight - 4) {
-                nt = Math.max(0, window.innerHeight - nh - 8);
-                changed = true;
-            }
+            if (state !== 'normal') return;
+            const r = readRect(div);
+            let nl = r.left, nt = r.top, nw = r.width, nh = r.height, changed = false;
+            if (nl + nw > window.innerWidth - 4) { nw = Math.max(240, window.innerWidth - nl - 8); changed = true; }
+            if (nt + nh > window.innerHeight - 4) { nh = Math.max(120, window.innerHeight - nt - 8); changed = true; }
+            if (nl + nw > window.innerWidth - 4) { nl = Math.max(0, window.innerWidth - nw - 8); changed = true; }
+            if (nt + nh > window.innerHeight - 4) { nt = Math.max(0, window.innerHeight - nh - 8); changed = true; }
             if (changed) {
-                div.style.left = nl + 'px';
-                div.style.top = nt + 'px';
-                div.style.width = nw + 'px';
-                div.style.height = nh + 'px';
-                normalRect = { left: nl, top: nt, width: nw, height: nh };
+                Object.assign(div.style, { left: nl + 'px', top: nt + 'px', width: nw + 'px', height: nh + 'px' });
+                savedRect = { left: nl, top: nt, width: nw, height: nh };
             }
         });
-    }
-
-    function enableDrag(panel, handle) {
-        let dragging = false, sx = 0, sy = 0, sl = 0, st = 0;
-
-        function start(x, y) {
-            if (panelState === 'min-edge-left' || panelState === 'min-edge-right') {
-                restoreFromEdge(panel, false);
-            }
-            if (panelState === 'max') {
-                panelState = 'normal';
-                updateWinBtns();
-            }
-            const r = panel.getBoundingClientRect();
-            dragging = true; sx = x; sy = y; sl = r.left; st = r.top;
-            if (panelState === 'normal') {
-                normalRect = { left: r.left, top: r.top, width: r.width, height: r.height };
-            } else if (panelState === 'min' && normalRect) {
-                normalRect.left = r.left;
-                normalRect.top = r.top;
-            }
-            panel.classList.remove('wechat-ai-anim');
-            panel.style.right = 'auto';
-            panel.style.bottom = 'auto';
-            panel.style.left = sl + 'px';
-            panel.style.top = st + 'px';
-        }
-
-        function move(x, y) {
-            if (!dragging) return;
-            let nl = sl + (x - sx);
-            let nt = st + (y - sy);
-            const w = panel.offsetWidth, h = panel.offsetHeight;
-            nl = Math.max(0, Math.min(window.innerWidth - Math.min(w, 60), nl));
-            nt = Math.max(0, Math.min(window.innerHeight - 32, nt));
-            panel.style.left = nl + 'px';
-            panel.style.top = nt + 'px';
-            if (normalRect) { normalRect.left = nl; normalRect.top = nt; }
-        }
-
-        function end() {
-            if (!dragging) return;
-            dragging = false;
-
-            if (panelState === 'min') {
-                const r = panel.getBoundingClientRect();
-                const threshold = 40;
-                if (r.left < threshold) {
-                    snapToEdge(panel, 'left');
-                } else if (r.right > window.innerWidth - threshold) {
-                    snapToEdge(panel, 'right');
-                }
-            }
-        }
-
-        handle.addEventListener('touchstart', function (e) { start(e.touches[0].clientX, e.touches[0].clientY); }, { passive: true });
-        handle.addEventListener('touchmove', function (e) { move(e.touches[0].clientX, e.touches[0].clientY); e.preventDefault(); }, { passive: false });
-        handle.addEventListener('touchend', end);
-        handle.addEventListener('touchcancel', end);
-        handle.addEventListener('mousedown', function (e) { start(e.clientX, e.clientY); });
-        document.addEventListener('mousemove', function (e) { move(e.clientX, e.clientY); });
-        document.addEventListener('mouseup', end);
-        handle.addEventListener('dblclick', function (e) {
-            e.preventDefault();
-            toggleMax(panel);
-        });
-
-        panel.addEventListener('click', function (e) {
-            if (panelState === 'min-edge-left' || panelState === 'min-edge-right') {
-                e.preventDefault();
-                e.stopPropagation();
-                restoreFromEdge(panel, true);
-            }
-        }, true);
-    }
-
-    function enableResize(panel, handle) {
-        let resizing = false;
-        let sx = 0, sy = 0, sw = 0, sh = 0;
-        let left = 0, top = 0;
-
-        function start(x, y) {
-            if (panelState === 'min-edge-left' || panelState === 'min-edge-right') return;
-            if (panelState === 'max') {
-                panelState = 'normal';
-                updateWinBtns();
-            }
-            if (panelState === 'min') {
-                toggleMin(panel);
-            }
-            const r = panel.getBoundingClientRect();
-            resizing = true;
-            sx = x; sy = y;
-            sw = r.width; sh = r.height;
-            left = r.left; top = r.top;
-            normalRect = { left: r.left, top: r.top, width: r.width, height: r.height };
-            panel.classList.remove('wechat-ai-anim');
-            panel.style.right = 'auto';
-            panel.style.bottom = 'auto';
-            panel.style.left = left + 'px';
-            panel.style.top = top + 'px';
-            panel.style.width = sw + 'px';
-            panel.style.height = sh + 'px';
-            panel.style.maxWidth = 'none';
-            panel.style.maxHeight = 'none';
-            handle.classList.add('wechat-ai-resizing');
-        }
-
-        function move(x, y) {
-            if (!resizing) return;
-            const dx = x - sx;
-            const dy = y - sy;
-            const minW = 240, minH = 120;
-            const maxW = Math.max(minW, window.innerWidth - left - 8);
-            const maxH = Math.max(minH, window.innerHeight - top - 8);
-            const newW = Math.max(minW, Math.min(maxW, sw + dx));
-            const newH = Math.max(minH, Math.min(maxH, sh + dy));
-            panel.style.width = newW + 'px';
-            panel.style.height = newH + 'px';
-            if (normalRect) { normalRect.width = newW; normalRect.height = newH; }
-        }
-
-        function end() {
-            if (!resizing) return;
-            resizing = false;
-            handle.classList.remove('wechat-ai-resizing');
-        }
-
-        handle.addEventListener('touchstart', function (e) {
-            start(e.touches[0].clientX, e.touches[0].clientY);
-        }, { passive: true });
-        handle.addEventListener('touchmove', function (e) {
-            if (!resizing) return;
-            move(e.touches[0].clientX, e.touches[0].clientY);
-            e.preventDefault();
-        }, { passive: false });
-        handle.addEventListener('touchend', end);
-        handle.addEventListener('touchcancel', end);
-        handle.addEventListener('mousedown', function (e) {
-            start(e.clientX, e.clientY);
-            e.preventDefault();
-        });
-        document.addEventListener('mousemove', function (e) {
-            if (!resizing) return;
-            move(e.clientX, e.clientY);
-        });
-        document.addEventListener('mouseup', end);
     }
 
     setTimeout(createUI, 1500);
+    timer.add(flush);
 
-    workerTimer.add(flushMessages);
+    let executing = false;
+    let pendingForward = null;
+    let lastUserTs = 0;
+    let lastTaskTs = 0;
+    let lastReplyTs = 0;
 
-    if (isDoubao) {
-        let lastUserMsgTs = 0;
-        let lastDsTime = 0;
-        let executing = false;
-        let seen = new Set();
-        let lastKey = '';
-        let stable = 0;
-        let ready = false;
-        let currentPath = location.pathname;
-        let urlChangeUntil = 0;
+    const seen = new Set();
+    let lastKey = '';
+    let stable = 0;
+    let ready = false;
+    let currentPath = location.pathname;
+    let urlChangeUntil = 0;
 
-        workerTimer.add(async function () {
-            if (executing) return;
-            const raw = GM_getValue(KEY_USER_MSG);
-            if (!raw) return;
-            let data;
-            try { data = JSON.parse(raw); } catch (e) { return; }
-            if (!data || data.ts === lastUserMsgTs) return;
-            lastUserMsgTs = data.ts;
+    setTimeout(() => {
+        const init = getReplyData();
+        lastKey = init.text + '###' + init.images.join('|');
+        if (init.text || init.images.length) seen.add(lastKey);
+        ready = true;
+    }, 5000);
 
-            executing = true;
-            try {
-                let imagePasted = false;
-                if (data.image) {
-                    imagePasted = await pasteImageToDoubao(data.image);
-                    await new Promise(r => setTimeout(r, 800));
-                }
+    async function handleUser(data) {
+        pushMessage('system', '[' + myLabel + '] 正在处理用户消息...');
+        flush();
 
-                const rawText = (data.text || '').trim();
-                const hasRealText = rawText && rawText !== '[用户上传了一张图片]';
+        let imagePasted = false;
+        if (data.image && isDoubao) {
+            imagePasted = await pasteImageToDoubao(data.image);
+            await sleep(800);
+        }
 
-                if (hasRealText) {
-                    const ok = await typeIntoDoubao(rawText);
-                    if (!ok && !imagePasted) {
-                        pushMessage('system', '笨包输入框未就绪');
-                        flushMessages();
-                        return;
-                    }
-                } else if (!data.image) {
-                    pushMessage('system', '消息为空');
-                    flushMessages();
-                    return;
-                } else if (data.image && !imagePasted) {
-                    const ok = await typeIntoDoubao('[用户上传了一张图片，请根据上下文回答]');
-                    if (!ok) {
-                        pushMessage('system', '笨包输入框未就绪');
-                        flushMessages();
-                        return;
-                    }
-                }
+        const rawText = (data.text || '').trim();
+        const hasRealText = rawText && rawText !== '[用户上传了一张图片]';
+        let textToSend = '';
+        if (hasRealText) textToSend = rawText;
+        else if (data.image && !imagePasted) textToSend = '[用户上传了一张图片，请根据上下文回答]';
+        else if (!data.image) { pushMessage('system', '消息为空'); flush(); return; }
 
-                await new Promise(r => setTimeout(r, 700));
+        if (textToSend) {
+            const ok = await typeIntoMyAI(textToSend);
+            if (!ok) { pushMessage('system', '[' + myLabel + '] 输入框未就绪'); flush(); return; }
+        }
+        await sleep(700);
+        const sent = await waitAndClickSend(getMyInputBox(), 5000);
+        if (!sent) { pushMessage('system', '[' + myLabel + '] 发送失败'); flush(); return; }
 
-                const editor = document.querySelector('div[contenteditable="true"]');
-                const sent = await waitAndClickSend(editor || document.querySelector('textarea'), 5000);
-                if (!sent) {
-                    pushMessage('system', '发送失败，请手动发送');
-                    flushMessages();
-                    return;
-                }
-
-                await new Promise(r => setTimeout(r, 2500));
-                const editor2 = document.querySelector('div[contenteditable="true"]');
-                const remaining = editor2 ? (editor2.innerText || '').trim() : '';
-                const textExpected = hasRealText ? rawText : '[用户上传了一张图片，请根据上下文回答]';
-                if (remaining && remaining === textExpected.trim()) {
-                    if (editor2) {
-                        editor2.focus();
-                        pressEnter(editor2);
-                    }
-                    await new Promise(r => setTimeout(r, 1500));
-                    const editor3 = document.querySelector('div[contenteditable="true"]');
-                    const remaining2 = editor3 ? (editor3.innerText || '').trim() : '';
-                    if (remaining2 === textExpected.trim()) {
-                        const btn = findSendBtn(editor3);
-                        if (btn) btn.click();
-                        await new Promise(r => setTimeout(r, 1500));
-                        const editor4 = document.querySelector('div[contenteditable="true"]');
-                        const remaining3 = editor4 ? (editor4.innerText || '').trim() : '';
-                        if (remaining3 === textExpected.trim()) {
-                            pushMessage('system', '笨包发送失败，请手动发送');
-                            flushMessages();
-                        }
-                    }
-                }
-            } finally {
-                executing = false;
-            }
-        });
-
-        setInterval(function () {
-            if (location.pathname === currentPath) return;
-            currentPath = location.pathname;
-            urlChangeUntil = Date.now() + 2000;
-            lastKey = '';
-            stable = 0;
-            setTimeout(function () {
-                if (!ready) return;
-                const cur = getDoubaoReplyData();
-                const k = cur.text + '###' + cur.images.join('|');
-                if (cur.text || cur.images.length) {
-                    seen.add(k);
-                    lastKey = k;
-                }
-                stable = 0;
-            }, 1500);
-        }, 500);
-
-        workerTimer.add(function () {
-            if (!ready) return;
-            if (Date.now() < urlChangeUntil) return;
-            const latest = getDoubaoReplyData();
-            if ((!latest.text || latest.text.length < 5) && latest.images.length === 0) return;
-
-            const key = latest.text + '###' + latest.images.join('|');
-            if (key !== lastKey) {
-                lastKey = key;
-                stable = 0;
-                return;
-            }
-            stable++;
-            if (stable < 3) return;
-            if (seen.has(key)) return;
-            seen.add(key);
-            stable = 0;
-
-            const session = getSession();
-
-            if (!session.active) {
-                pushMessage('doubao', latest.text, latest.images);
-                flushMessages();
-                return;
-            }
-
-            pushMessage('doubao', latest.text, latest.images);
-            flushMessages();
-
-            if (session.round >= session.maxRounds) {
-                pushMessage('system', '已达最大轮次（' + session.maxRounds + '轮），对话结束');
-                flushMessages();
-                session.active = false;
-                setSession(session);
-                return;
-            }
-
-            let userText = '手动发送';
-            const rawU = GM_getValue(KEY_USER_MSG);
-            if (rawU) {
-                try {
-                    const u = JSON.parse(rawU);
-                    if (u && u.text) userText = u.text;
-                } catch (e) {}
-            }
-
-            const imgNote = latest.images.length ? '\n[笨包生成了 ' + latest.images.length + ' 张图片]' : '';
-            let charHint = '';
-            if (session.maxChars > 0) {
-                charHint = '\n\n（请用不超过 ' + session.maxChars + ' 字简短回复，不要重复上文）';
-            }
-
-            GM_setValue(KEY_TASK_DS, JSON.stringify({
-                text: 'User：' + userText + '\n\nDoubao：' + latest.text + imgNote + charHint,
-                timestamp: Date.now()
-            }));
-            pushMessage('system', '已发给D老师（第' + (session.round + 1) + '/' + session.maxRounds + '轮）');
-            flushMessages();
-        });
-
-        workerTimer.add(function () {
-            const raw = GM_getValue(KEY_REPLY_DS);
-            if (!raw) return;
-            let d;
-            try { d = JSON.parse(raw); } catch (e) { return; }
-            if (!d || d.timestamp === lastDsTime) return;
-            lastDsTime = d.timestamp;
-
-            const session = getSession();
-            if (!session.active) return;
-
-            session.round++;
-
-            if (session.round >= session.maxRounds) {
-                pushMessage('system', '第' + session.round + '轮完成，对话结束');
-                flushMessages();
-                session.active = false;
-                setSession(session);
-                return;
-            }
-
-            setSession(session);
-
-            (async function () {
-                let charHint = '';
-                if (session.maxChars > 0) {
-                    charHint = '（请用不超过' + session.maxChars + '字简短回应）';
-                }
-                const payload = 'DeepSeek：' + (d.reply || '') + (d.images && d.images.length ? '\n[DeepSeek 发了 ' + d.images.length + ' 张图片]' : '') + charHint;
-                const ok = await typeIntoDoubao(payload);
-                if (!ok) return;
-                await new Promise(r => setTimeout(r, 700));
-                const editor = document.querySelector('div[contenteditable="true"]');
-                await waitAndClickSend(editor || document.querySelector('textarea'), 5000);
-            })();
-        });
-
-        setTimeout(function () {
-            const init = getDoubaoReplyData();
-            lastKey = init.text + '###' + init.images.join('|');
-            if (init.text || init.images.length) seen.add(lastKey);
-            ready = true;
-        }, 5000);
+        pendingForward = { from: myRole, round: 0, userText: rawText };
+        pushMessage('system', '[' + myLabel + '] 已发送，等待回复...');
+        flush();
     }
 
-    if (isDeepseek) {
-        let lastTaskTime = 0;
+    async function handleTask(task) {
+        const ok = await typeIntoMyAI(task.text);
+        if (!ok) { pushMessage('system', '[' + myLabel + '] 输入框未就绪'); flush(); return; }
+        await sleep(700);
+        await waitAndClickSend(getMyInputBox(), 5000);
+        pendingForward = { from: task.from, round: task.round || 0, userText: '' };
+    }
 
-        workerTimer.add(async function () {
-            const raw = GM_getValue(KEY_TASK_DS);
-            if (!raw) return;
-            let task;
-            try { task = JSON.parse(raw); } catch (e) { return; }
-            if (!task || task.timestamp === lastTaskTime) return;
-            lastTaskTime = task.timestamp;
+    async function handleReply(d) {
+        const ok = await typeIntoMyAI('对方：' + (d.text || ''));
+        if (!ok) return;
+        await sleep(700);
+        await waitAndClickSend(getMyInputBox(), 5000);
+        pendingForward = { from: myRole, round: d.round || 0, userText: '' };
+    }
 
-            const session = getSession();
-            if (!session.active) return;
+    timer.add(async () => {
+        if (executing) return;
 
-            const ta = document.querySelector('textarea#chat-input') || document.querySelector('textarea');
-            const ok = await typeIntoDeepseek(task.text);
-            if (!ok) return;
-            await new Promise(r => setTimeout(r, 600));
-            await waitAndClickSend(ta, 5000);
-
-            let last = '';
-            let st = 0;
-            const check = setInterval(function () {
-                const cur = getDsReplyData();
-                const key = cur.text + '###' + cur.images.join('|');
-                if ((!cur.text || cur.text.length < 5) && cur.images.length === 0) return;
-                if (key === last) {
-                    st++;
-                    if (st >= 4) {
-                        clearInterval(check);
-                        pushMessage('deepseek', cur.text, cur.images);
-                        flushMessages();
-                        GM_setValue(KEY_REPLY_DS, JSON.stringify({
-                            reply: cur.text,
-                            images: cur.images,
-                            timestamp: Date.now()
-                        }));
-                    }
-                } else {
-                    st = 0;
-                    last = key;
+        let action = null;
+        const userRaw = GM_getValue(K.USER);
+        if (userRaw) {
+            let d; try { d = JSON.parse(userRaw); } catch (e) {}
+            if (d && d.ts !== lastUserTs && d.source === myRole) {
+                lastUserTs = d.ts;
+                action = { type: 'user', data: d };
+            }
+        }
+        if (!action) {
+            const taskRaw = GM_getValue(K.TASK);
+            if (taskRaw) {
+                let t; try { t = JSON.parse(taskRaw); } catch (e) {}
+                if (t && t.timestamp !== lastTaskTs && t.from !== myRole) {
+                    lastTaskTs = t.timestamp;
+                    action = { type: 'task', data: t };
                 }
-            }, 1000);
+            }
+        }
+        if (!action) {
+            const replyRaw = GM_getValue(K.REPLY);
+            if (replyRaw) {
+                let r; try { r = JSON.parse(replyRaw); } catch (e) {}
+                if (r && r.timestamp !== lastReplyTs && r.from === myRole) {
+                    lastReplyTs = r.timestamp;
+                    action = { type: 'reply', data: r };
+                }
+            }
+        }
+        if (!action) return;
 
-            setTimeout(function () { clearInterval(check); }, 180000);
-        });
+        executing = true;
+        try {
+            if (action.type === 'user') await handleUser(action.data);
+            else if (action.type === 'task') await handleTask(action.data);
+            else await handleReply(action.data);
+        } finally {
+            executing = false;
+        }
+    });
+
+    timer.add(() => {
+        如果 (!准备 || 日期.现在() < urlChangeUntil) 返回;
+        常数最近的 = getReplyData();
+        如果 ((!最近的.文本 || 最近的.文本.长度 < 5)&& !最近的.图片.长度) 返回;
+
+        常数键 = 最近的.文本 + '###' + 最近的.图片.加入('|');
+        如果 (键 !== lastKey) { lastKey = 键; 稳定的 = 0; 返回; }
+        稳定的++;
+        如果 (稳定的 < 3 || 看到.有(键)) 返回;
+        看到.增加(键);
+        稳定的 = 0;
+
+        推送(我的角色, 最近的.文本, 最近的.图片);
+        冲洗();
+
+        如果 (!悬而未决) 返回;
+        常数请 = 悬而未决;
+        悬而未决 = 等于零的;
+
+        常数会议 = 获取会话();
+        常数 newRound = 请.圆 + 1;
+        如果 (newRound >= 会议.最大轮数 * 2) {
+            推送('system', '对话结束（' + 会议.最大轮数 + '轮）');
+            冲洗();
+            会议.活跃的 = 虚假的;
+            会议(会议);
+            返回;
+        }
+        会议(对象.分配({}, 会议, { 圆: newRound }));
+
+        常数targetKey = 请.从 === 我的角色 ? K.任务 : K.回复;
+        常数charHint = 会议.最大字符数 > 0 ? '\n\n（请用不超过' + 会议.最大字符数 + '字简短回复）' : '';
+        常数文本 = 请.用户
+            ? “用户：” + 请.用户 + '\n\n' + myLabel + '：' + 最近的.文本 + charHint
+            : myLabel + '：' + 最近的.文本 + charHint;
+
+        GM_setValue(targetKey, JSON.字符串化({
+            文本,
+            从: 请.从,
+            圆: newRound,
+            时间戳: 日期.现在()
+        }));
+        推送('system', '已发给' + 其他标签 + '（' + newRound + '/' + (会议.最大轮数 * 2) + '）');
+        冲洗();
+    });
+
+    如果 (isDoubao) {
+        setInterval(() => {
+            如果 (位置.路径名 === 当前路径) 返回;
+            当前路径 = 位置.路径名;
+            会议分配会议.圆() + 2000;
+            newRound = '';
+            常数 = 0;
+            targetKey请.从({}, 对象, { 分配: 会议 }));(() => {
+                圆charHint: \ =myLabel.'：'===最近的？你. charHint：；==+newRoundmyLabel；（!）：'>0最近的'+会议.最大字符数+'文本）charHint=myLabel=.：';
+                ? 最近的文本 + charHint.targetKeyJSON字符串化 + '\n\n' + 文本 + 从 + 请.从 + 圆 + newRound.时间戳日期 + 现在推送('已发给', 其他标签.'（'({();
+                newRound = 会议最大轮数.'）'.冲洗'system'如果+isDoubao+setInterval+如果+'/'+位置.'路径名 + '*2'当前路径{. 返回. 当前路径位置路径名 GM_setValue{. #图片
+                urlChangeUntil = 日期..现在; (lastKey稳定的 = setTimeout() + 2000;.如果 = ''准备返回常数恶狗.=0getReplyData万(() => {  文本
+                }, 500)//这段代码是 JavaScript you you you you you. Com（！）{const cur=getReplyData（）；. const K=cur++++“###################################################################################################################################################
+            }, 1500);
+        }, 500);
     }
 })();
