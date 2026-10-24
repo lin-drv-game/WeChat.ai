@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         wechat.ai
 // @namespace    wechat.ai
-// @version      1.0.0
+// @version      1.0.1
 // @description  wechat.ai
 // @match        https://www.doubao.com/*
 // @match        https://chat.deepseek.com/*
@@ -48,37 +48,29 @@
     });
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const GROUP_PROMPT = role => `【系统提示：这是一个多AI群聊，参与者有用户、豆包和DeepSeek。你现在是${role},请直接回复.】\n\n`;
+    const GROUP_PROMPT = role => `【系统提示：当前是一个多AI群聊，参与者有用户、豆包和DeepSeek。你现在是${role},请简短回复。】\n\n`;
 
-    function getSession() {
-        const raw = GM_getValue(K.SESS);
-        if (!raw) return { round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: false };
-        try {
-            const s = JSON.parse(raw);
-            return { round: s.round || 0, maxRounds: s.maxRounds || MAX_ROUNDS, maxChars: s.maxChars || MAX_CHARS, active: !!s.active };
-        } catch (e) { return { round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: false }; }
-    }
+    const getSession = () => {
+        try { return Object.assign({ round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: false }, JSON.parse(GM_getValue(K.SESS) || '{}')); }
+        catch (e) { return { round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: false }; }
+    };
     const setSession = s => GM_setValue(K.SESS, JSON.stringify(s));
     const resetSession = () => setSession({ round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: true });
 
-    function getThinking() {
-        const raw = GM_getValue(K.THINKING);
-        if (!raw) return { active: false, startTime: 0, duration: 0 };
-        try {
-            const t = JSON.parse(raw);
-            return { active: !!t.active, startTime: t.startTime || 0, duration: t.duration || 0 };
-        } catch (e) { return { active: false, startTime: 0, duration: 0 }; }
-    }
+    const getThinking = () => {
+        try { return Object.assign({ active: false, startTime: 0, duration: 0 }, JSON.parse(GM_getValue(K.THINKING) || '{}')); }
+        catch (e) { return { active: false, startTime: 0, duration: 0 }; }
+    };
     const setThinking = t => GM_setValue(K.THINKING, JSON.stringify(t));
 
-    function getMessages() {
+    const getMessages = () => {
         try { const a = JSON.parse(GM_getValue(K.MSGS)); return Array.isArray(a) ? a : []; } catch (e) { return []; }
-    }
-    function pushMessage(who, text, images, extra) {
+    };
+    const pushMessage = (who, text, images, extra) => {
         const msgs = getMessages();
         msgs.push(Object.assign({ who, text: text || '', images: images || [], ts: Date.now() + Math.random() }, extra || {}));
         GM_setValue(K.MSGS, JSON.stringify(msgs));
-    }
+    };
 
     function resizeImage(file, maxSide, quality, square) {
         return new Promise((resolve, reject) => {
@@ -251,18 +243,12 @@
         return '';
     }
 
-    function pickImageSrc(img) {
-        const link = img.closest('a');
-        if (link && link.href && /\.(jpg|jpeg|png|webp|gif)/i.test(link.href.split('?')[0])) return link.href;
-        return img.getAttribute('data-src') || img.getAttribute('data-original') || img.currentSrc || img.src || '';
-    }
-
     function extractImages(container) {
         if (!container) return [];
         const candidates = [];
         for (const img of container.querySelectorAll('img')) {
             if (!img.complete || img.naturalWidth < 80 || img.naturalHeight < 80) continue;
-            const src = pickImageSrc(img);
+            const src = img.closest('a')?.href || img.getAttribute('data-src') || img.getAttribute('data-original') || img.currentSrc || img.src || '';
             if (!src || src.startsWith('blob:')) continue;
             if (src.startsWith('data:') && src.length < 500) continue;
             if (/avatar|icon|emoji|logo|badge|gift|skeleton|placeholder|loading|spinner/i.test(src)) continue;
@@ -538,8 +524,8 @@
         const textEl = el.querySelector('.wechat-ai-thinking-text');
         if (!textEl) return;
         const dots = ['.', '..', '...']; let idx = 0;
-        textEl.textContent = '--深度思考中.--';
-        thinkingTimer = setInterval(() => { idx = (idx + 1) % 3; textEl.textContent = '--深度思考中' + dots[idx] + '--'; }, 450);
+        textEl.textContent = '深度思考中.';
+        thinkingTimer = setInterval(() => { idx = (idx + 1) % 3; textEl.textContent = '深度思考中' + dots[idx]; }, 450);
     }
 
     function stopThinking() {
@@ -548,7 +534,6 @@
         if (el) el.style.display = 'none';
     }
 
-    // 修复了这里：加入对话是否被删除/清空的检查，并缩短防呆超时到 60 秒
     function checkThinking() {
         const t = getThinking();
         if (t.active) {
@@ -605,21 +590,31 @@
 
     function flush() {
         const c = document.getElementById('wechat-ai-messages'), msgs = getMessages();
-        if (msgs.length > rendered) { for (let i = rendered; i < msgs.length; i++) renderMessage(msgs[i]); rendered = msgs.length; }
+        if (!c) return;
+
+        if (msgs.length < rendered) {
+            [...c.children].forEach(child => {
+                if (child.id !== 'wechat-ai-thinking') child.remove();
+            });
+            rendered = 0;
+        }
+        if (msgs.length > rendered) { 
+            for (let i = rendered; i < msgs.length; i++) renderMessage(msgs[i]); 
+            rendered = msgs.length; 
+        }
         const thinking = document.getElementById('wechat-ai-thinking');
-        if (c && thinking) {
+        if (thinking) {
             if (!getThinking().active) { if (thinking.style.display !== 'none') stopThinking(); }
             else { if (thinking.parentNode === c && thinking !== c.lastChild) { c.appendChild(thinking); c.scrollTop = c.scrollHeight; } }
         }
     }
 
-    // 修复了这里：发送新消息时强制清空思考状态
     async function sendUserMessage() {
         const inp = document.getElementById('wechat-ai-input'); const text = inp.value.trim();
         if (!text) return;
         inp.value = ''; inp.blur(); await sleep(50);
         const old = getSession();
-        if (old.active && old.round > 0) { pushMessage('system', '上一轮尚未结束，已重置为新对话'); flush(); }
+        if (old.active && old.round > 0) { pushMessage('system', '上轮对话未结束，已重置为新对话'); flush(); }
         resetSession(); 
         setThinking({ active: false, duration: 0 }); 
         lastThinkingKey = '';
@@ -690,7 +685,7 @@
         const div = document.createElement('div'); div.id = 'wechat-ai-ui';
         div.innerHTML = `
             <div id="wechat-ai-dragbar">
-                <div id="wechat-ai-dragzone">≡   WeChat.ai</div>
+                <div id="wechat-ai-dragzone">≡   WeChat.ai  〄</div>
                 <div id="wechat-ai-winbtns">
                     <button id="wechat-ai-min" class="wechat-ai-winbtn">—</button>
                     <button id="wechat-ai-max" class="wechat-ai-winbtn">□</button>
@@ -705,7 +700,7 @@
             <div id="wechat-ai-messages">
                 <div id="wechat-ai-thinking" class="wechat-ai-row wechat-ai-deepseek">
                     <div class="wechat-ai-avatar" style="background-image: url('${DS_AVATAR_URL}'); background-color: transparent;"></div>
-                    <div class="wechat-ai-thinking-text">--深度思考中...--</div>
+                    <div class="wechat-ai-thinking-text">深度思考中...</div>
                 </div>
             </div>
             <div id="wechat-ai-input-area">
@@ -743,8 +738,26 @@
         });
     }
 
-    setTimeout(createUI, 1500); timer.add(flush); timer.add(checkThinking);
-
+(function waitForPageReady() {
+    let attempts = 0;
+    const maxAttempts = 30; 
+    
+    const timer = setInterval(() => {
+        attempts++;
+        const hasInput = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
+        const rootRendered = document.getElementById('root') && document.getElementById('root').children.length > 0;
+        
+        if (hasInput || rootRendered) {
+            clearInterval(timer);
+            createUI();
+            setTimeout(() => { flush(); checkThinking(); }, 500);
+        } else if (attempts >= maxAttempts) {
+            clearInterval(timer);
+            createUI(); 
+        }
+    }, 500);
+})();
+    timer.add(flush); timer.add(checkThinking);
     let executing = false, pendingForward = null, lastUserTs = 0, lastTaskTs = 0, lastReplyTs = 0;
     const seen = new Set(); let lastKey = '', stable = 0, ready = false, currentPath = location.pathname, urlChangeUntil = 0;
 
@@ -856,24 +869,24 @@
         setSession(Object.assign({}, session, { round: newRound }));
         const targetKey = pf.from === myRole ? K.TASK : K.REPLY;
         const charHint = session.maxChars > 0 ? '\n\n（请用不超过' + session.maxChars + '字简短回复）' : '';
-        const 你0 = GROUP_PROMPT抓住一个％1），) + (加载图像.虚假的
-            ? 功能尝试常数.用户12 + '\n\n' + 斑点 + 等待 + 等待222.取来 + 斑点
-            : 常数 + 文件 + 新的.文件 + px；);
+        const text = GROUP_PROMPT(otherLabel) + (pf.userText
+            ? 'User：' + pf.userText + '\n\n' + myLabel + '：' + latest.text + charHint
+            : myLabel + '：' + latest.text + charHint);
 
-伊斯朵宝老师'豆包'
-常数其他标签
-人工智能喜欢);
+        GM_setValue(targetKey, JSON.stringify({ text, from: pf.from, round: newRound, timestamp: Date.now() }));
+        pushMessage('system', '已发给' + otherLabel + '（' + newRound + '/' + (session.maxRounds * 2) + '）'); flush();
+    });
 
-IMG_ACCEPTMAX_ROUNDSjs文件内容
-IMG_ACCEPTvoluto你：
-你使用常数
-命名空间
-微信
-人工智能
-；
-常数
-// @description wechat.ai MAX_CHARS = 100;// @match https://www.doubao.com/* = 'image/jpeg,image/png,image/webp,image/gif,image/bmp,image/heic,image/heif,image/*';.// @match https://chat.deepseek.com/* ANIM_MS = 220;// @grant GM_setValue//@grant GM_getValue MIN_SNAP_PX=40；//@grant GM_addStyle//@run-at document-end=/=/用户脚本============.[you you@you@you@you@you@you@you@you@you@mayou===？'Doubao'：'deepseek'{you@you@you@you@you@you@you@you@mayou@mayou===？'Doubao'{编辑微信#999!用户.2图片}, #wechat-文本-背景-豆包. 图片-文本-'包'{背景}:
-#1-“4 加载图像6文件-返回-新的-承诺-用户12-返回如果(悬而未决 >= $：女士贝塞尔曲线你.人工智能 * 悬而未决)如果（isdobao）+'you'"urlChangeUntil“wechat_ail_session”日期+\"wechat_ai_messages"\现在最大轮数+"[wechat_ail_session]'system'[wechat_session]+[wechat_session].你你背景去+"'+'/"wechat_ail_sessionlastKey
-[其他标签]deepseekpx；边界边界:75％；80％setTimeout) => {'+：.马约托*2ff；：+. you you browyou============-，.；deepseek=；（，D）=>you K D）；
+    if (isDoubao) {
+        setInterval(() => {
+            if (location.pathname === currentPath) return;
+            currentPath = location.pathname; urlChangeUntil = Date.now() + 2000; lastKey = ''; stable = 0;
+            setTimeout(() => {
+                if (!ready) return;
+                const cur = getReplyData(); const k = cur.text + '###' + cur.images.join('|');
+                if (cur.text || cur.images.length) { seen.add(k); lastKey = k; }
+                stable = 0;
+            }, 1500);
+        }, 500);
     }
 })();
