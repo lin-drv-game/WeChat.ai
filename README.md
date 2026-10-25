@@ -73,3 +73,20 @@
 const DEFAULT_MAX_ROUNDS = 1;   // 每条用户消息触发的豆包 ↔ DeepSeek 往返轮数
 const DEFAULT_MAX_CHARS  = 100; // 追加到每条 AI prompt 的软性字数提示（0 = 不限）
 ```
+
+
+
+
+## 许可证
+
+本项目采用 **MIT 许可证**。具有法律效力的英文原文请参阅 [LICENSE](./LICENSE)。
+
+以下译文仅供参考：
+
+- [简体中文](./LICENSE.zh-CN.md)
+- [日本語](./LICENSE.ja.md)
+- [한국어](./LICENSE.ko.md)
+
+如各语言版本之间存在歧义，**以英文版本为准**。
+
+版权所有 (c) 2026 shen136
