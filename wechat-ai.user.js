@@ -49,27 +49,35 @@
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
     const GROUP_PROMPT = role => `【系统提示：当前是一个多AI群聊，参与者有用户、豆包和DeepSeek。你现在是${role},请简短回复。】\n\n`;
-
-    const getSession = () => {
-        try { return Object.assign({ round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: false }, JSON.parse(GM_getValue(K.SESS) || '{}')); }
-        catch (e) { return { round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: false }; }
+    const readJSON = (key, fallback) => {
+        try {
+            const raw = GM_getValue(key);
+            if (raw === undefined || raw === null || raw === '') return fallback;
+            const parsed = JSON.parse(raw);
+            return parsed === undefined ? fallback : parsed;
+        } catch (e) { return fallback; }
     };
-    const setSession = s => GM_setValue(K.SESS, JSON.stringify(s));
+    const writeJSON = (key, value) => GM_setValue(key, JSON.stringify(value));
+    const makeActionKey = (type, data) => {
+        const parts = [type, data && (data.ts || data.timestamp), data && (data.from || data.source), data && data.text, data && data.image];
+        return parts.filter(v => v !== undefined && v !== null && v !== '').map(String).join('|');
+    };
+
+    const getSession = () => Object.assign({ round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: false }, readJSON(K.SESS, {}));
+    const setSession = s => writeJSON(K.SESS, s);
     const resetSession = () => setSession({ round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: true });
 
-    const getThinking = () => {
-        try { return Object.assign({ active: false, startTime: 0, duration: 0 }, JSON.parse(GM_getValue(K.THINKING) || '{}')); }
-        catch (e) { return { active: false, startTime: 0, duration: 0 }; }
-    };
-    const setThinking = t => GM_setValue(K.THINKING, JSON.stringify(t));
+    const getThinking = () => Object.assign({ active: false, startTime: 0, duration: 0 }, readJSON(K.THINKING, {}));
+    const setThinking = t => writeJSON(K.THINKING, t);
 
     const getMessages = () => {
-        try { const a = JSON.parse(GM_getValue(K.MSGS)); return Array.isArray(a) ? a : []; } catch (e) { return []; }
+        const a = readJSON(K.MSGS, []);
+        return Array.isArray(a) ? a : [];
     };
     const pushMessage = (who, text, images, extra) => {
         const msgs = getMessages();
         msgs.push(Object.assign({ who, text: text || '', images: images || [], ts: Date.now() + Math.random() }, extra || {}));
-        GM_setValue(K.MSGS, JSON.stringify(msgs));
+        writeJSON(K.MSGS, msgs);
     };
 
     function resizeImage(file, maxSide, quality, square) {
@@ -134,7 +142,7 @@
             stopThinking();
             pushMessage('user', '', [url]);
             flush();
-            GM_setValue(K.USER, JSON.stringify({ text: '[用户上传了一张图片]', image: url, ts: Date.now(), source: myRole }));
+            writeJSON(K.USER, { text: '[用户上传了一张图片]', image: url, ts: Date.now(), source: myRole });
         });
     }
 
@@ -150,11 +158,17 @@
 
     function makeWorkerTimer() {
         const listeners = [];
+        const run = () => { for (const fn of Array.from(listeners)) { try { fn(); } catch (e) {} } };
         try {
-            const w = new Worker(URL.createObjectURL(new Blob(['setInterval(function(){postMessage(1)},1000)'], { type: 'application/javascript' })));
-            w.onmessage = () => listeners.forEach(fn => fn());
-        } catch (e) { setInterval(() => listeners.forEach(fn => fn()), 1000); }
-        return { add: fn => listeners.push(fn) };
+            const blob = new Blob(['setInterval(function(){postMessage(1)},1000)'], { type: 'application/javascript' });
+            const blobUrl = URL.createObjectURL(blob);
+            const w = new Worker(blobUrl);
+            w.onmessage = run;
+            return { add: fn => listeners.push(fn), stop: () => { try { w.terminate(); } catch (e) {} } };
+        } catch (e) {
+            const id = setInterval(run, 1000);
+            return { add: fn => listeners.push(fn), stop: () => clearInterval(id) };
+        }
     }
     const timer = makeWorkerTimer();
 
@@ -207,18 +221,22 @@
     const isEnabled = el => el && !el.disabled && el.getAttribute('aria-disabled') !== 'true' && el.offsetParent !== null;
 
     function findSendBtn(editorEl) {
-        const labeled = [...document.querySelectorAll('[aria-label]')];
-        for (const b of labeled) { const l = (b.getAttribute('aria-label') || '').trim(); if ((l === '发送' || l.toLowerCase() === 'send') && isEnabled(b)) return b; }
-        for (const b of labeled) { const l = (b.getAttribute('aria-label') || '').trim(); if (/^(发送|send)/i.test(l) && isEnabled(b)) return b; }
+        const candidates = Array.from(document.querySelectorAll('button, [role="button"], [type="submit"], input[type="button"], input[type="submit"]'));
+        const labelPriority = candidates.filter(el => {
+            const label = (el.getAttribute('aria-label') || '').trim();
+            const txt = (el.textContent || el.value || '').trim();
+            return isEnabled(el) && (label === '发送' || label.toLowerCase() === 'send' || /^发送|^send/i.test(label) || /^发送$|^send$/i.test(txt));
+        });
+        if (labelPriority.length) return labelPriority[labelPriority.length - 1];
         if (editorEl) {
             let p = editorEl.parentElement;
-            for (let i = 0; i < 6 && p; i++) {
-                const btns = [...p.querySelectorAll('button, div[role="button"]')].filter(isEnabled);
+            for (let i = 0; i < 8 && p; i++) {
+                const btns = Array.from(p.querySelectorAll('button, [role="button"], [type="submit"], input[type="button"], input[type="submit"]')).filter(isEnabled);
                 if (btns.length) return btns[btns.length - 1];
                 p = p.parentElement;
             }
         }
-        return [...document.querySelectorAll('button, div[role="button"]')].find(b => (b.innerText || '').trim() === '发送' && isEnabled(b)) || null;
+        return null;
     }
 
     async function waitAndClickSend(editorEl, timeout = 4000) {
@@ -226,7 +244,13 @@
         const start = Date.now();
         while (Date.now() - start < timeout) {
             const btn = findSendBtn(editorEl);
-            if (btn) { btn.click(); return true; }
+            if (btn) {
+                try { btn.click(); } catch (e) { }
+                await sleep(150);
+                const stillVisible = btn && !!btn.isConnected && isEnabled(btn);
+                if (!stillVisible) return true;
+                return true;
+            }
             await sleep(250);
         }
         if (editorEl) { pressEnter(editorEl); return true; }
@@ -570,9 +594,17 @@
             info.textContent = '已思考，用时 ' + Math.round(thinkingMs / 1000) + ' 秒'; b.appendChild(info);
         }
 
-        const cleanText = (text || '').replace(/\n{3,}/g, '\n\n').trim();
+        const cleanText = String(text || '').replace(/\n{3,}/g, '\n\n').trim();
         const uniq = [];
-        if (images && images.length) { const seen = {}; for (const s of images) if (!seen[s]) { seen[s] = true; uniq.push(s); } }
+        const seen = {};
+        if (Array.isArray(images)) {
+            for (const src of images) {
+                if (!src || typeof src !== 'string') continue;
+                const key = src.trim();
+                if (!key || seen[key]) continue;
+                seen[key] = true; uniq.push(key);
+            }
+        }
         const hasText = cleanText.length > 0, hasImages = uniq.length > 0;
         if (!hasText && hasImages && !(who === 'deepseek' && thinkingMs > 0)) b.className += ' wechat-ai-image-only';
         if (hasText) { const t = document.createElement('div'); t.textContent = cleanText; b.appendChild(t); }
@@ -580,7 +612,8 @@
             for (const src of uniq) {
                 const img = document.createElement('img');
                 img.className = 'wechat-ai-img' + (who === 'user' ? ' wechat-ai-img-small' : '');
-                img.src = src; img.addEventListener('click', e => { e.stopPropagation(); openImageFull(src); });
+                img.src = src; img.loading = 'lazy';
+                img.addEventListener('click', e => { e.stopPropagation(); openImageFull(src); });
                 img.onload = () => { c.scrollTop = c.scrollHeight; }; img.onerror = () => img.remove();
                 b.appendChild(img);
             }
@@ -589,40 +622,51 @@
     }
 
     function flush() {
-        const c = document.getElementById('wechat-ai-messages'), msgs = getMessages();
+        const c = document.getElementById('wechat-ai-messages');
         if (!c) return;
+        const msgs = getMessages();
 
         if (msgs.length < rendered) {
-            [...c.children].forEach(child => {
+            for (const child of Array.from(c.children)) {
                 if (child.id !== 'wechat-ai-thinking') child.remove();
-            });
+            }
             rendered = 0;
         }
-        if (msgs.length > rendered) { 
-            for (let i = rendered; i < msgs.length; i++) renderMessage(msgs[i]); 
-            rendered = msgs.length; 
+        if (msgs.length > rendered) {
+            for (let i = rendered; i < msgs.length; i++) {
+                const msg = msgs[i];
+                if (!msg || !msg.who) continue;
+                renderMessage(msg);
+            }
+            rendered = msgs.length;
         }
         const thinking = document.getElementById('wechat-ai-thinking');
         if (thinking) {
-            if (!getThinking().active) { if (thinking.style.display !== 'none') stopThinking(); }
-            else { if (thinking.parentNode === c && thinking !== c.lastChild) { c.appendChild(thinking); c.scrollTop = c.scrollHeight; } }
+            const t = getThinking();
+            if (!t.active) {
+                if (thinking.style.display !== 'none') stopThinking();
+            } else if (thinking.parentNode === c && thinking !== c.lastChild) {
+                c.appendChild(thinking);
+                c.scrollTop = c.scrollHeight;
+            }
         }
     }
 
     async function sendUserMessage() {
-        const inp = document.getElementById('wechat-ai-input'); const text = inp.value.trim();
+        const inp = document.getElementById('wechat-ai-input');
+        const text = (inp ? inp.value : '').trim();
         if (!text) return;
-        inp.value = ''; inp.blur(); await sleep(50);
+        if (inp) { inp.value = ''; inp.blur(); }
+        await sleep(50);
         const old = getSession();
         if (old.active && old.round > 0) { pushMessage('system', '上轮对话未结束，已重置为新对话'); flush(); }
-        resetSession(); 
-        setThinking({ active: false, duration: 0 }); 
+        resetSession();
+        setThinking({ active: false, duration: 0 });
         lastThinkingKey = '';
         stopThinking();
         pushMessage('user', text); flush();
-        GM_setValue(K.USER, JSON.stringify({ text, ts: Date.now(), source: myRole }));
+        writeJSON(K.USER, { text, ts: Date.now(), source: myRole });
     }
-
     function showBgMenu() {
         ['wechat-ai-bg-mask', 'wechat-ai-bg-menu'].forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
         const mask = document.createElement('div'); mask.id = 'wechat-ai-bg-mask'; document.body.appendChild(mask);
@@ -644,11 +688,14 @@
         const saved = GM_getValue(K.BG); if (saved) el.style.backgroundImage = `url("${saved}")`;
         let timer = null, sx = 0, sy = 0;
         const isBlank = t => t && !t.closest('.wechat-ai-avatar') && !t.closest('.wechat-ai-bubble') && t.id !== 'wechat-ai-thinking';
+        const activate = () => {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => { timer = null; showBgMenu(); }, 600);
+        };
         const start = e => {
             if (!isBlank(e.target)) return;
             const t = e.touches ? e.touches[0] : e; sx = t.clientX; sy = t.clientY;
-            if (timer) clearTimeout(timer);
-            timer = setTimeout(() => { timer = null; showBgMenu(); }, 600);
+            activate();
         };
         const move = e => {
             if (!timer) return; const t = e.touches ? e.touches[0] : e;
@@ -762,8 +809,10 @@
     const seen = new Set(); let lastKey = '', stable = 0, ready = false, currentPath = location.pathname, urlChangeUntil = 0;
 
     setTimeout(() => {
-        const init = getReplyData(); lastKey = init.text + '###' + init.images.join('|');
-        if (init.text || init.images.length) seen.add(lastKey);
+        const init = getReplyData();
+        const initKey = (init.text || '') + '###' + (init.images || []).join('|');
+        lastKey = initKey;
+        if (init.text || (init.images || []).length) seen.add(initKey);
         ready = true;
     }, 5000);
 
@@ -773,10 +822,11 @@
     }
 
     async function handleUser(data) {
+        if (!data || typeof data !== 'object') return;
         pushMessage('system', '[' + myLabel + '] 正在处理用户消息...'); flush();
         let imagePasted = false;
         if (data.image && isDoubao) { imagePasted = await pasteImageToDoubao(data.image); await sleep(800); }
-        const rawText = (data.text || '').trim();
+        const rawText = String(data.text || '').trim();
         const hasRealText = rawText && rawText !== '[用户上传了一张图片]';
         let textToSend = '';
         if (hasRealText) textToSend = rawText;
@@ -795,9 +845,9 @@
         markDeepseekThinkingStart(); pendingForward = { from: myRole, round: 0, userText: rawText };
         pushMessage('system', '[' + myLabel + '] 已发送，等待回复...'); flush();
     }
-
     async function handleTask(task) {
-        const ok = await typeIntoMyAI(task.text);
+        if (!task || typeof task !== 'object') return;
+        const ok = await typeIntoMyAI(task.text || '');
         if (!ok) { pushMessage('system', '[' + myLabel + '] 输入框未就绪'); flush(); return; }
         await sleep(700);
         await waitAndClickSend(getMyInputBox(), 5000);
@@ -805,7 +855,8 @@
     }
 
     async function handleReply(d) {
-        const ok = await typeIntoMyAI(d.text);
+        if (!d || typeof d !== 'object') return;
+        const ok = await typeIntoMyAI(d.text || '');
         if (!ok) return;
         await sleep(700);
         await waitAndClickSend(getMyInputBox(), 5000);
@@ -815,23 +866,23 @@
     timer.add(async () => {
         if (executing) return;
         let action = null;
-        const userRaw = GM_getValue(K.USER);
-        if (userRaw) {
-            let d; try { d = JSON.parse(userRaw); } catch (e) {}
-            if (d && d.ts !== lastUserTs && d.source === myRole) { lastUserTs = d.ts; action = { type: 'user', data: d }; }
+        const userData = readJSON(K.USER, null);
+        if (userData && userData.ts !== lastUserTs && userData.source === myRole) {
+            lastUserTs = userData.ts;
+            action = { type: 'user', data: userData };
         }
         if (!action) {
-            const taskRaw = GM_getValue(K.TASK);
-            if (taskRaw) {
-                let t; try { t = JSON.parse(taskRaw); } catch (e) {}
-                if (t && t.timestamp !== lastTaskTs && t.from !== myRole) { lastTaskTs = t.timestamp; action = { type: 'task', data: t }; }
+            const taskData = readJSON(K.TASK, null);
+            if (taskData && taskData.timestamp !== lastTaskTs && taskData.from !== myRole) {
+                lastTaskTs = taskData.timestamp;
+                action = { type: 'task', data: taskData };
             }
         }
         if (!action) {
-            const replyRaw = GM_getValue(K.REPLY);
-            if (replyRaw) {
-                let r; try { r = JSON.parse(replyRaw); } catch (e) {}
-                if (r && r.timestamp !== lastReplyTs && r.from === myRole) { lastReplyTs = r.timestamp; action = { type: 'reply', data: r }; }
+            const replyData = readJSON(K.REPLY, null);
+            if (replyData && replyData.timestamp !== lastReplyTs && replyData.from === myRole) {
+                lastReplyTs = replyData.timestamp;
+                action = { type: 'reply', data: replyData };
             }
         }
         if (!action) return;
@@ -873,7 +924,7 @@
             ? 'User：' + pf.userText + '\n\n' + myLabel + '：' + latest.text + charHint
             : myLabel + '：' + latest.text + charHint);
 
-        GM_setValue(targetKey, JSON.stringify({ text, from: pf.from, round: newRound, timestamp: Date.now() }));
+        writeJSON(targetKey, { text, from: pf.from, round: newRound, timestamp: Date.now() });
         pushMessage('system', '已发给' + otherLabel + '（' + newRound + '/' + (session.maxRounds * 2) + '）'); flush();
     });
 
