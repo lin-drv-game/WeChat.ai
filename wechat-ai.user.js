@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         wechat.ai
 // @namespace    wechat.ai
-// @version      1.0.1
+// @version      1.1.0
 // @description  wechat.ai
 // @match        https://www.doubao.com/*
 // @match        https://chat.deepseek.com/*
+// @require      https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js
+// @resource     hljs_css https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
+// @grant        GM_getResourceText
 // @run-at       document-end
 // ==/UserScript==
 
@@ -48,7 +51,7 @@
     });
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const GROUP_PROMPT = role => `【系统提示：当前是一个多AI群聊，参与者有用户、豆包和DeepSeek。你现在是${role},请简短回复。】\n\n`;
+    const GROUP_PROMPT = role => `当前是一个多AI群聊，参与者有用户、豆包和DeepSeek。你现在是${role},请简短回复。\n\n`;
 
     const getSession = () => {
         try { return Object.assign({ round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: false }, JSON.parse(GM_getValue(K.SESS) || '{}')); }
@@ -66,8 +69,30 @@
     const getMessages = () => {
         try { const a = JSON.parse(GM_getValue(K.MSGS)); return Array.isArray(a) ? a : []; } catch (e) { return []; }
     };
+    
     const pushMessage = (who, text, images, extra) => {
         const msgs = getMessages();
+        
+        if (who !== 'user' && who !== 'system' && msgs.length > 0) {
+            const last = msgs[msgs.length - 1];
+            if (last.who === who && Date.now() - last.ts < 13500) {
+                last.text = text || '';
+                last.images = images || [];
+                last.ts = Date.now() + Math.random();
+                if (extra) {
+                    if (extra.thinkingMs !== undefined) last.thinkingMs = extra.thinkingMs;
+                } else {
+                    delete last.thinkingMs;
+                }
+                GM_setValue(K.MSGS, JSON.stringify(msgs));
+                return;
+            }
+        }
+
+        if (who === 'system' && msgs.length > 0) {
+            const last = msgs[msgs.length - 1];
+            if (last.who === 'system' && last.text === text && Date.now() - last.ts < 5000) return;
+        }
         msgs.push(Object.assign({ who, text: text || '', images: images || [], ts: Date.now() + Math.random() }, extra || {}));
         GM_setValue(K.MSGS, JSON.stringify(msgs));
     };
@@ -166,18 +191,37 @@
     }
 
     async function typeIntoDoubao(text) {
-        const editor = document.querySelector('div[contenteditable="true"]');
+        const editors = [...document.querySelectorAll('div[contenteditable="true"], [role="textbox"]')];
+        let editor = null;
+        for (const e of editors) {
+            const r = e.getBoundingClientRect();
+            if (r.width > 100 && r.height > 20 && r.top > 0) { editor = e; break; }
+        }
+        if (!editor) editor = document.querySelector('div[contenteditable="true"]');
+
         if (editor) {
             editor.focus();
+            const sel = window.getSelection(), range = document.createRange();
+            range.selectNodeContents(editor); sel.removeAllRanges(); sel.addRange(range);
+            document.execCommand('delete', false, null);
+            await sleep(150);
+
             const dt = new DataTransfer(); dt.setData('text/plain', text);
             editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
-            await sleep(400);
-            if (editor.innerHTML.length > 0 || (editor.innerText || '').trim()) return true;
-            editor.focus(); document.execCommand('insertText', false, text); await sleep(300);
-            if (editor.innerHTML.length > 0 || (editor.innerText || '').trim()) return true;
-            editor.textContent = text; await sleep(300);
+            await sleep(300);
+            if ((editor.innerText || '').trim().length > 0) return true;
+
+            document.execCommand('insertText', false, text);
+            await sleep(300);
+            if ((editor.innerText || '').trim().length > 0) return true;
+
+            editor.innerHTML = `<p>${text}</p>`;
+            editor.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: text, bubbles: true, cancelable: false }));
+            editor.dispatchEvent(new Event('change', { bubbles: true }));
+            await sleep(300);
             return !!(editor.innerText || '').trim();
         }
+
         const ta = document.querySelector('textarea');
         if (ta && ta.offsetParent !== null) { await setTextarea(ta, text); return true; }
         return false;
@@ -212,22 +256,29 @@
         for (const b of labeled) { const l = (b.getAttribute('aria-label') || '').trim(); if (/^(发送|send)/i.test(l) && isEnabled(b)) return b; }
         if (editorEl) {
             let p = editorEl.parentElement;
-            for (let i = 0; i < 6 && p; i++) {
-                const btns = [...p.querySelectorAll('button, div[role="button"]')].filter(isEnabled);
+            for (let i = 0; i < 8 && p; i++) {
+                const btns = [...p.querySelectorAll('button, div[role="button"], div[class*="send"]')].filter(isEnabled);
                 if (btns.length) return btns[btns.length - 1];
                 p = p.parentElement;
+            }
+        }
+        const icons = [...document.querySelectorAll('svg')];
+        for (const icon of icons) {
+            if (icon.innerHTML.includes('send') || icon.innerHTML.includes('发送') || icon.classList.contains('send')) {
+                const btn = icon.closest('button, div[role="button"]');
+                if (btn && isEnabled(btn)) return btn;
             }
         }
         return [...document.querySelectorAll('button, div[role="button"]')].find(b => (b.innerText || '').trim() === '发送' && isEnabled(b)) || null;
     }
 
-    async function waitAndClickSend(editorEl, timeout = 4000) {
-        if (editorEl && editorEl.focus) { try { editorEl.focus(); } catch (e) {} await sleep(200); }
+    async function waitAndClickSend(editorEl, timeout = 5000) {
+        if (editorEl && editorEl.focus) { try { editorEl.focus(); } catch (e) {} await sleep(300); }
         const start = Date.now();
         while (Date.now() - start < timeout) {
             const btn = findSendBtn(editorEl);
             if (btn) { btn.click(); return true; }
-            await sleep(250);
+            await sleep(200);
         }
         if (editorEl) { pressEnter(editorEl); return true; }
         return false;
@@ -237,7 +288,35 @@
         for (const sel of selectors) {
             const els = document.querySelectorAll(sel);
             if (!els.length) continue;
-            const t = (els[els.length - 1].innerText || '').trim().replace(/\n{3,}/g, '\n\n');
+            
+            const el = els[els.length - 1];
+            const clone = el.cloneNode(true);
+           
+            clone.querySelectorAll('button, svg, [class*="copy"], [class*="download"], [class*="banner"], [class*="header"]').forEach(n => n.remove());
+            
+            const pres = [...clone.querySelectorAll('pre')];
+            pres.forEach(pre => {
+                const codeEl = pre.querySelector('code');
+                let codeText = codeEl ? codeEl.innerText : pre.innerText;
+                let lang = 'text';
+                
+                let parent = pre.parentElement;
+                if (parent) {
+                    const langMatch = parent.innerText.match(/^(python|javascript|java|cpp|c|go|rust|php|sql|html|css|bash|shell|json|typescript|ts|js)\b/i);
+                    if (langMatch) lang = langMatch[1].toLowerCase();
+                }
+                
+                const mdCode = `\n\`\`\`${lang}\n${codeText}\n\`\`\`\n`;
+                const textNode = document.createTextNode(mdCode);
+                pre.parentNode.replaceChild(textNode, pre);
+            });
+
+            let t = (clone.innerText || '').trim()
+                .replace(/\n?复制\n?下载\n?/g, '\n')
+                .replace(/\n?复制\n?/g, '\n')
+                .replace(/\n?下载\n?/g, '\n')
+                .replace(/\n{3,}/g, '\n\n');
+                
             if (t) return t;
         }
         return '';
@@ -275,7 +354,12 @@
     }
 
     function getReplyData() {
-        const text = readLatest(isDoubao ? ['[data-testid="message_text_content"]', '[class*="message-content"]', '[class*="markdown-body"]'] : ['div[class*="ds-markdown"]', 'div[class*="markdown"]']);
+        let text = readLatest(isDoubao ? ['[data-testid="message_text_content"]', '[class*="message-content"]', '[class*="markdown-body"]'] : ['div[class*="ds-markdown"]', 'div[class*="markdown"]']);
+        
+        if (text && (text.includes('系统提示：当前是一个多AI群聊') || text.includes('User：'))) {
+            return { text: '', images: [] };
+        }
+
         let images = [];
         if (isDoubao) {
             const els = document.querySelectorAll('[data-testid="message_text_content"]');
@@ -295,6 +379,11 @@
     }
 
     const getMyInputBox = () => isDoubao ? document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea') : document.querySelector('textarea#chat-input') || document.querySelector('textarea');
+
+    try {
+        const hljsCss = GM_getResourceText('hljs_css');
+        GM_addStyle(hljsCss);
+    } catch (e) {}
 
     GM_addStyle(`
         #wechat-ai-ui { position: fixed; right: 8px; bottom: 8px; width: 92vw; max-width: 400px; height: 60vh; max-height: 520px; background: #f5f5f5; border: 1px solid #ddd; border-radius: 10px; z-index: 99999; display: flex; flex-direction: column; font-family: -apple-system, sans-serif; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,0.15); overflow: hidden; color: #222 !important; }
@@ -317,7 +406,7 @@
         .wechat-ai-row { display: flex; align-items: flex-start; margin: 6px 0; gap: 6px; }
         .wechat-ai-row.wechat-ai-right { flex-direction: row-reverse; }
         .wechat-ai-avatar { width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; background-size: cover; background-position: center; background-color: #ccc; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #fff !important; font-weight: bold; overflow: hidden; cursor: pointer; }
-        .wechat-ai-bubble { max-width: 75%; padding: 8px 12px; border-radius: 10px; word-break: break-word; line-height: 1.5; font-size: 13px; color: #222 !important; background: #fff; }
+        .wechat-ai-bubble { max-width: 85%; padding: 8px 12px; border-radius: 10px; word-break: break-word; line-height: 1.5; font-size: 13px; color: #222 !important; background: #fff; overflow: hidden; }
         .wechat-ai-bubble div { color: #222 !important; }
         .wechat-ai-user .wechat-ai-bubble { background: #95ec69; color: #111 !important; }
         .wechat-ai-user .wechat-ai-bubble div { color: #111 !important; }
@@ -341,10 +430,18 @@
         #wechat-ai-toggle { position: fixed; right: 8px; bottom: 8px; width: 48px; height: 48px; border-radius: 50%; background: #07c160; color: #fff !important; border: none; font-size: 20px; z-index: 99999; cursor: pointer; display: none; }
         #wechat-ai-resize { position: absolute; right: 0; bottom: 0; width: 28px; height: 28px; cursor: nwse-resize; touch-action: none; z-index: 10; background: linear-gradient(135deg, transparent 52%, rgba(120,120,120,0.5) 52%, rgba(120,120,120,0.7) 100%); border-radius: 0 0 10px 0; -webkit-tap-highlight-color: transparent; }
         #wechat-ai-resize.wechat-ai-resizing { background: linear-gradient(135deg, transparent 52%, rgba(7,193,96,0.6) 52%, rgba(7,193,96,0.85) 100%); }
-        #wechat-ai-bg-menu { position: fixed; left: 50%; top: 50%; transform: translate(-50%,-50%); background: #fff; border-radius: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.25); padding: 8px; z-index: 100001; display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
+        #wechat-ai-bg-menu { position: fixed; background: #fff; border-radius: 10px; box-shadow: 0 4px 24px rgba(0,0,0,0.25); padding: 8px; z-index: 100001; display: flex; flex-direction: column; gap: 4px; min-width: 150px; }
         #wechat-ai-bg-menu button { border: none; background: transparent; padding: 12px 16px; font-size: 14px; color: #333 !important; cursor: pointer; border-radius: 6px; text-align: center; font-family: inherit; }
         #wechat-ai-bg-menu button:active { background: #f0f0f0; }
         #wechat-ai-bg-mask { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.25); z-index: 100000; }
+        
+        .wechat-ai-code-block { margin: 6px 0; border-radius: 6px; overflow: hidden; background: #1e1e1e; border: 1px solid #333; }
+        .wechat-ai-code-header { display: flex; justify-content: space-between; align-items: center; background: #2d2d2d; padding: 4px 8px; font-size: 11px; color: #aaa; user-select: none; }
+        .wechat-ai-code-lang { text-transform: uppercase; }
+        .wechat-ai-code-copy { background: transparent; border: 1px solid #555; color: #ddd; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 11px; font-family: inherit; }
+        .wechat-ai-code-copy:active { background: rgba(255,255,255,0.1); }
+        .wechat-ai-code-block pre { margin: 0; padding: 8px; overflow-x: auto; }
+        .wechat-ai-code-block code { font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; font-size: 12px; color: #d4d4d4; background: transparent !important; padding: 0 !important; }
     `);
 
     let state = 'normal', savedRect = null, rendered = 0, thinkingTimer = null, lastThinkingKey = '';
@@ -549,6 +646,85 @@
         } else if (lastThinkingKey) { lastThinkingKey = ''; stopThinking(); }
     }
 
+    function renderMarkdownContent(container, text) {
+        const codeBlockRegex = /```(\w*)\n([\s\S]*?)(?:```|$)/g;
+        let lastIndex = 0;
+        let match;
+        let hasCode = false;
+
+        while ((match = codeBlockRegex.exec(text)) !== null) {
+            hasCode = true;
+            const textBefore = text.slice(lastIndex, match.index);
+            if (textBefore.trim()) {
+                const p = document.createElement('div');
+                p.style.whiteSpace = 'pre-wrap';
+                p.textContent = textBefore;
+                container.appendChild(p);
+            }
+
+            const lang = match[1] || 'text';
+            const code = match[2].replace(/\n$/, '');
+
+            const block = document.createElement('div');
+            block.className = 'wechat-ai-code-block';
+
+            const header = document.createElement('div');
+            header.className = 'wechat-ai-code-header';
+            
+            const langSpan = document.createElement('span');
+            langSpan.className = 'wechat-ai-code-lang';
+            langSpan.textContent = lang;
+            
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'wechat-ai-code-copy';
+            copyBtn.textContent = '复制';
+            copyBtn.onclick = () => {
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(code).then(() => {
+                        copyBtn.textContent = '已复制';
+                        setTimeout(() => copyBtn.textContent = '复制', 2000);
+                    });
+                } else {
+                    const ta = document.createElement('textarea');
+                    ta.value = code;
+                    document.body.appendChild(ta);
+                    ta.select();
+                    document.execCommand('copy');
+                    ta.remove();
+                    copyBtn.textContent = '已复制';
+                    setTimeout(() => copyBtn.textContent = '复制', 2000);
+                }
+            };
+
+            header.appendChild(langSpan);
+            header.appendChild(copyBtn);
+
+            const pre = document.createElement('pre');
+            const codeEl = document.createElement('code');
+            codeEl.className = `language-${lang}`;
+            codeEl.textContent = code;
+            pre.appendChild(codeEl);
+
+            block.appendChild(header);
+            block.appendChild(pre);
+            container.appendChild(block);
+
+            if (window.hljs) {
+                try { window.hljs.highlightElement(codeEl); } catch (e) {}
+            }
+
+            lastIndex = match.index + match[0].length;
+        }
+
+        const textAfter = text.slice(lastIndex);
+        if (textAfter.trim() || !hasCode) {
+            const p = document.createElement('div');
+            p.style.whiteSpace = 'pre-wrap';
+            p.textContent = textAfter || text;
+            container.appendChild(p);
+        }
+    }
+
     function renderMessage(msg) {
         const c = document.getElementById('wechat-ai-messages');
         if (!c) return;
@@ -575,7 +751,11 @@
         if (images && images.length) { const seen = {}; for (const s of images) if (!seen[s]) { seen[s] = true; uniq.push(s); } }
         const hasText = cleanText.length > 0, hasImages = uniq.length > 0;
         if (!hasText && hasImages && !(who === 'deepseek' && thinkingMs > 0)) b.className += ' wechat-ai-image-only';
-        if (hasText) { const t = document.createElement('div'); t.textContent = cleanText; b.appendChild(t); }
+        
+        if (hasText) {
+            renderMarkdownContent(b, cleanText);
+        }
+        
         if (hasImages) {
             for (const src of uniq) {
                 const img = document.createElement('img');
@@ -609,6 +789,32 @@
         }
     }
 
+    function clearChat() {
+        GM_setValue(K.MSGS, '[]');
+        GM_setValue(K.USER, '');
+        GM_setValue(K.TASK, '');
+        GM_setValue(K.REPLY, '');
+        GM_setValue(K.SESS, '');
+        GM_setValue(K.THINKING, '');
+        
+        rendered = 0;
+        const c = document.getElementById('wechat-ai-messages');
+        if (c) {
+            [...c.children].forEach(child => {
+                if (child.id !== 'wechat-ai-thinking') child.remove();
+            });
+        }
+        stopThinking();
+        lastThinkingKey = '';
+        
+        lastUserTs = 0;
+        lastTaskTs = 0;
+        lastReplyTs = 0;
+        seen.clear();
+        lastKey = '';
+        stable = 0;
+    }
+
     async function sendUserMessage() {
         const inp = document.getElementById('wechat-ai-input'); const text = inp.value.trim();
         if (!text) return;
@@ -623,11 +829,15 @@
         GM_setValue(K.USER, JSON.stringify({ text, ts: Date.now(), source: myRole }));
     }
 
-    function showBgMenu() {
+    function showBgMenu(x, y) {
         ['wechat-ai-bg-mask', 'wechat-ai-bg-menu'].forEach(id => { const el = document.getElementById(id); if (el) el.remove(); });
         const mask = document.createElement('div'); mask.id = 'wechat-ai-bg-mask'; document.body.appendChild(mask);
         const menu = document.createElement('div'); menu.id = 'wechat-ai-bg-menu';
-        menu.innerHTML = '<button data-action="change">更换背景</button><button data-action="clear">恢复默认</button><button data-action="cancel">取消</button>';
+        menu.innerHTML = '<button data-action="change">更换背景</button><button data-action="clear">恢复背景</button><button data-action="clear-chat" style="color:#e53935 !important;">清空对话</button><button data-action="cancel">取消操作</button>';
+        
+        menu.style.left = Math.min(window.innerWidth - 160, Math.max(10, x - 75)) + 'px';
+        menu.style.top = Math.min(window.innerHeight - 220, Math.max(10, y - 80)) + 'px';
+
         document.body.appendChild(menu);
         const close = () => { mask.remove(); menu.remove(); };
         mask.addEventListener('click', close);
@@ -636,6 +846,7 @@
             const action = btn.getAttribute('data-action'); close();
             if (action === 'change') pickBackground();
             else if (action === 'clear') { const el = document.getElementById('wechat-ai-messages'); if (el) { el.style.backgroundImage = ''; GM_setValue(K.BG, ''); } }
+            else if (action === 'clear-chat') { clearChat(); }
         });
     }
 
@@ -646,9 +857,13 @@
         const isBlank = t => t && !t.closest('.wechat-ai-avatar') && !t.closest('.wechat-ai-bubble') && t.id !== 'wechat-ai-thinking';
         const start = e => {
             if (!isBlank(e.target)) return;
-            const t = e.touches ? e.touches[0] : e; sx = t.clientX; sy = t.clientY;
+            const t = e.touches ? e.touches[0] : e; 
+            sx = t.clientX; sy = t.clientY;
             if (timer) clearTimeout(timer);
-            timer = setTimeout(() => { timer = null; showBgMenu(); }, 600);
+            timer = setTimeout(() => { 
+                timer = null; 
+                showBgMenu(sx, sy); 
+            }, 600);
         };
         const move = e => {
             if (!timer) return; const t = e.touches ? e.touches[0] : e;
@@ -674,7 +889,14 @@
         const end = () => {
             if (!pulling) return; pulling = false; bar.classList.remove('wechat-ai-pulling'); if (refreshing) return;
             const h = parseFloat(bar.style.height) || 0;
-            if (h >= THRESHOLD) { refreshing = true; bar.style.height = '40px'; icon.classList.add('wechat-ai-spinning'); text.textContent = '正在刷新'; setTimeout(() => { try { location.reload(); } catch (e) {} }, 500); }
+            if (h >= THRESHOLD) { 
+                refreshing = true; 
+                bar.style.height = '40px'; 
+                icon.classList.add('wechat-ai-spinning'); 
+                text.textContent = '正在刷新'; 
+                clearChat(); 
+                setTimeout(() => { try { location.reload(); } catch (e) {} }, 600); 
+            }
             else { bar.style.height = '0px'; }
         };
         scroller.addEventListener('touchend', end); scroller.addEventListener('touchcancel', end);
@@ -685,7 +907,7 @@
         const div = document.createElement('div'); div.id = 'wechat-ai-ui';
         div.innerHTML = `
             <div id="wechat-ai-dragbar">
-                <div id="wechat-ai-dragzone">≡   WeChat.ai  〄</div>
+                <div id="wechat-ai-dragzone">≡   WeChat.ai </div>
                 <div id="wechat-ai-winbtns">
                     <button id="wechat-ai-min" class="wechat-ai-winbtn">—</button>
                     <button id="wechat-ai-max" class="wechat-ai-winbtn">□</button>
@@ -738,33 +960,57 @@
         });
     }
 
-(function waitForPageReady() {
-    let attempts = 0;
-    const maxAttempts = 30; 
-    
-    const timer = setInterval(() => {
-        attempts++;
-        const hasInput = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
-        const rootRendered = document.getElementById('root') && document.getElementById('root').children.length > 0;
-        
-        if (hasInput || rootRendered) {
-            clearInterval(timer);
-            createUI();
-            setTimeout(() => { flush(); checkThinking(); }, 500);
-        } else if (attempts >= maxAttempts) {
-            clearInterval(timer);
-            createUI(); 
-        }
-    }, 500);
-})();
+    (function waitForPageReady() {
+        let attempts = 0;
+        const maxAttempts = 30; 
+        const timer = setInterval(() => {
+            attempts++;
+            const hasInput = document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea');
+            const rootRendered = document.getElementById('root') && document.getElementById('root').children.length > 0;
+            
+            if (hasInput || rootRendered) {
+                clearInterval(timer);
+                createUI();
+                setTimeout(() => { flush(); checkThinking(); }, 500);
+            } else if (attempts >= maxAttempts) {
+                clearInterval(timer);
+                createUI(); 
+            }
+        }, 500);
+    })();
+
     timer.add(flush); timer.add(checkThinking);
     let executing = false, pendingForward = null, lastUserTs = 0, lastTaskTs = 0, lastReplyTs = 0;
-    const seen = new Set(); let lastKey = '', stable = 0, ready = false, currentPath = location.pathname, urlChangeUntil = 0;
+    const seen = new Set(); let lastKey = '', stable = 0;
+    let ready = false;
+    let currentHref = location.href, urlChangeUntil = 0;
+
+    let initCheckCount = 0;
+    let lastInitKey = '';
+    const initInterval = setInterval(() => {
+        const cur = getReplyData();
+        const k = cur.text + '###' + cur.images.join('|');
+        if (k && k === lastInitKey) {
+            initCheckCount++;
+            if (initCheckCount >= 2) {
+                seen.add(k); lastKey = k;
+                ready = true;
+                clearInterval(initInterval);
+            }
+        } else {
+            lastInitKey = k;
+            initCheckCount = 0;
+        }
+    }, 1000);
 
     setTimeout(() => {
-        const init = getReplyData(); lastKey = init.text + '###' + init.images.join('|');
-        if (init.text || init.images.length) seen.add(lastKey);
-        ready = true;
+        if (!ready) {
+            const cur = getReplyData();
+            const k = cur.text + '###' + cur.images.join('|');
+            if (k) { seen.add(k); lastKey = k; }
+            ready = true;
+            clearInterval(initInterval);
+        }
     }, 5000);
 
     function markDeepseekThinkingStart() {
@@ -773,7 +1019,6 @@
     }
 
     async function handleUser(data) {
-        pushMessage('system', '[' + myLabel + '] 正在处理用户消息...'); flush();
         let imagePasted = false;
         if (data.image && isDoubao) { imagePasted = await pasteImageToDoubao(data.image); await sleep(800); }
         const rawText = (data.text || '').trim();
@@ -781,7 +1026,7 @@
         let textToSend = '';
         if (hasRealText) textToSend = rawText;
         else if (data.image && !imagePasted) textToSend = '[用户上传了一张图片，请根据上下文回答]';
-        else if (!data.image) { pushMessage('system', '消息为空'); flush(); return; }
+        else if (!data.image) return;
 
         if (textToSend) textToSend = GROUP_PROMPT(myLabel) + textToSend;
 
@@ -789,17 +1034,17 @@
             const ok = await typeIntoMyAI(textToSend);
             if (!ok) { pushMessage('system', '[' + myLabel + '] 输入框未就绪'); flush(); return; }
         }
-        await sleep(700);
+        await sleep(1500);
         const sent = await waitAndClickSend(getMyInputBox(), 5000);
         if (!sent) { pushMessage('system', '[' + myLabel + '] 发送失败'); flush(); return; }
+
         markDeepseekThinkingStart(); pendingForward = { from: myRole, round: 0, userText: rawText };
-        pushMessage('system', '[' + myLabel + '] 已发送，等待回复...'); flush();
     }
 
     async function handleTask(task) {
         const ok = await typeIntoMyAI(task.text);
         if (!ok) { pushMessage('system', '[' + myLabel + '] 输入框未就绪'); flush(); return; }
-        await sleep(700);
+        await sleep(1500);
         await waitAndClickSend(getMyInputBox(), 5000);
         markDeepseekThinkingStart(); pendingForward = { from: task.from, round: task.round || 0, userText: '' };
     }
@@ -807,13 +1052,15 @@
     async function handleReply(d) {
         const ok = await typeIntoMyAI(d.text);
         if (!ok) return;
-        await sleep(700);
+        await sleep(1500);
         await waitAndClickSend(getMyInputBox(), 5000);
         markDeepseekThinkingStart(); pendingForward = { from: myRole, round: d.round || 0, userText: '' };
     }
 
     timer.add(async () => {
         if (executing) return;
+        if (Date.now() < urlChangeUntil) return;
+        
         let action = null;
         const userRaw = GM_getValue(K.USER);
         if (userRaw) {
@@ -846,7 +1093,10 @@
     timer.add(() => {
         if (!ready || Date.now() < urlChangeUntil) return;
         const latest = getReplyData();
-        if ((!latest.text || latest.text.length < 5) && !latest.images.length) return;
+        
+        if (!latest.text || latest.text.includes('当前是一个多AI群聊')) return;
+        
+        if (latest.text.length < 5 && !latest.images.length) return;
         const key = latest.text + '###' + latest.images.join('|');
         if (key !== lastKey) { lastKey = key; stable = 0; return; }
         stable++;
@@ -874,19 +1124,28 @@
             : myLabel + '：' + latest.text + charHint);
 
         GM_setValue(targetKey, JSON.stringify({ text, from: pf.from, round: newRound, timestamp: Date.now() }));
-        pushMessage('system', '已发给' + otherLabel + '（' + newRound + '/' + (session.maxRounds * 2) + '）'); flush();
     });
 
-    if (isDoubao) {
-        setInterval(() => {
-            if (location.pathname === currentPath) return;
-            currentPath = location.pathname; urlChangeUntil = Date.now() + 2000; lastKey = ''; stable = 0;
-            setTimeout(() => {
-                if (!ready) return;
-                const cur = getReplyData(); const k = cur.text + '###' + cur.images.join('|');
-                if (cur.text || cur.images.length) { seen.add(k); lastKey = k; }
-                stable = 0;
-            }, 1500);
-        }, 500);
-    }
+    setInterval(() => {
+        if (location.href === currentHref) return;
+        currentHref = location.href;
+        
+        urlChangeUntil = Date.now() + 3000;
+        pendingForward = null; 
+        lastKey = ''; stable = 0;
+
+        const capture = () => {
+            if (!ready) return;
+            const cur = getReplyData();
+            if (cur.text || cur.images.length) {
+                const k = cur.text + '###' + cur.images.join('|');
+                seen.add(k); lastKey = k;
+            }
+            stable = 0;
+        };
+        
+        setTimeout(capture, 1000);
+        setTimeout(capture, 2000);
+        setTimeout(capture, 2800);
+    }, 500);
 })();
