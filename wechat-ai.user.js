@@ -1,16 +1,14 @@
 // ==UserScript==
-// @name         wechat.ai
+// @name         爱聊 (WeChat.ai)
 // @namespace    wechat.ai
-// @version      1.1.0
-// @description  wechat.ai
+// @version      1.1.1
+// @description  微信风格的豆包与 DeepSeek 实时群聊脚本
 // @match        https://www.doubao.com/*
 // @match        https://chat.deepseek.com/*
 // @require      https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js
-// @resource     hljs_css https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_addStyle
-// @grant        GM_getResourceText
 // @run-at       document-end
 // ==/UserScript==
 
@@ -51,7 +49,7 @@
     });
 
     const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const GROUP_PROMPT = role => `当前是一个多AI群聊，参与者有用户、豆包和DeepSeek。你现在是${role},请简短回复。\n\n`;
+    const GROUP_PROMPT = role => `系统提示：当前是一个多AI群聊，参与者有用户、豆包和DeepSeek。你现在是${role},请简短回复。\n\n`;
 
     const getSession = () => {
         try { return Object.assign({ round: 0, maxRounds: MAX_ROUNDS, maxChars: MAX_CHARS, active: false }, JSON.parse(GM_getValue(K.SESS) || '{}')); }
@@ -291,7 +289,7 @@
             
             const el = els[els.length - 1];
             const clone = el.cloneNode(true);
-           
+            
             clone.querySelectorAll('button, svg, [class*="copy"], [class*="download"], [class*="banner"], [class*="header"]').forEach(n => n.remove());
             
             const pres = [...clone.querySelectorAll('pre')];
@@ -304,6 +302,14 @@
                 if (parent) {
                     const langMatch = parent.innerText.match(/^(python|javascript|java|cpp|c|go|rust|php|sql|html|css|bash|shell|json|typescript|ts|js)\b/i);
                     if (langMatch) lang = langMatch[1].toLowerCase();
+                }
+                
+                if (lang === 'text') {
+                    if (codeText.includes('print(') || codeText.includes('def ') || codeText.includes('import ')) lang = 'python';
+                    else if (codeText.includes('function') || codeText.includes('const ') || codeText.includes('let ') || codeText.includes('console.log')) lang = 'javascript';
+                    else if (codeText.includes('#include')) lang = 'cpp';
+                    else if (codeText.includes('public class') || codeText.includes('public static void')) lang = 'java';
+                    else if (codeText.includes('<html>') || codeText.includes('<div>')) lang = 'html';
                 }
                 
                 const mdCode = `\n\`\`\`${lang}\n${codeText}\n\`\`\`\n`;
@@ -380,11 +386,6 @@
 
     const getMyInputBox = () => isDoubao ? document.querySelector('div[contenteditable="true"]') || document.querySelector('textarea') : document.querySelector('textarea#chat-input') || document.querySelector('textarea');
 
-    try {
-        const hljsCss = GM_getResourceText('hljs_css');
-        GM_addStyle(hljsCss);
-    } catch (e) {}
-
     GM_addStyle(`
         #wechat-ai-ui { position: fixed; right: 8px; bottom: 8px; width: 92vw; max-width: 400px; height: 60vh; max-height: 520px; background: #f5f5f5; border: 1px solid #ddd; border-radius: 10px; z-index: 99999; display: flex; flex-direction: column; font-family: -apple-system, sans-serif; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,0.15); overflow: hidden; color: #222 !important; }
         #wechat-ai-ui.wechat-ai-anim { transition: left ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), top ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), width ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), height ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), border-radius ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), background ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1), box-shadow ${ANIM_MS}ms cubic-bezier(0.4,0,0.2,1); }
@@ -406,13 +407,15 @@
         .wechat-ai-row { display: flex; align-items: flex-start; margin: 6px 0; gap: 6px; }
         .wechat-ai-row.wechat-ai-right { flex-direction: row-reverse; }
         .wechat-ai-avatar { width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; background-size: cover; background-position: center; background-color: #ccc; display: flex; align-items: center; justify-content: center; font-size: 12px; color: #fff !important; font-weight: bold; overflow: hidden; cursor: pointer; }
+        
         .wechat-ai-bubble { max-width: 85%; padding: 8px 12px; border-radius: 10px; word-break: break-word; line-height: 1.5; font-size: 13px; color: #222 !important; background: #fff; overflow: hidden; }
-        .wechat-ai-bubble div { color: #222 !important; }
+        .wechat-ai-bubble > div { color: #222 !important; }
         .wechat-ai-user .wechat-ai-bubble { background: #95ec69; color: #111 !important; }
-        .wechat-ai-user .wechat-ai-bubble div { color: #111 !important; }
+        .wechat-ai-user .wechat-ai-bubble > div { color: #111 !important; }
         .wechat-ai-doubao .wechat-ai-bubble { background: #fff; border: 1px solid #eee; color: #222 !important; }
         .wechat-ai-deepseek .wechat-ai-bubble { background: #dce6ff; color: #1a2340 !important; }
-        .wechat-ai-deepseek .wechat-ai-bubble div { color: #1a2340 !important; }
+        .wechat-ai-deepseek .wechat-ai-bubble > div { color: #1a2340 !important; }
+        
         .wechat-ai-image-only { background: transparent !important; padding: 0 !important; border: none !important; }
         .wechat-ai-bubble img.wechat-ai-img { display: block; max-width: 100%; max-height: 240px; height: auto; object-fit: contain; border-radius: 6px; margin-top: 6px; cursor: zoom-in; }
         .wechat-ai-bubble img.wechat-ai-img:first-child { margin-top: 0; }
@@ -435,13 +438,46 @@
         #wechat-ai-bg-menu button:active { background: #f0f0f0; }
         #wechat-ai-bg-mask { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.25); z-index: 100000; }
         
-        .wechat-ai-code-block { margin: 6px 0; border-radius: 6px; overflow: hidden; background: #1e1e1e; border: 1px solid #333; }
-        .wechat-ai-code-header { display: flex; justify-content: space-between; align-items: center; background: #2d2d2d; padding: 4px 8px; font-size: 11px; color: #aaa; user-select: none; }
+        /* 代码块基础样式 */
+        .wechat-ai-code-block { margin: 6px 0; border-radius: 6px; overflow: hidden; background: #0d1117; border: 1px solid #30363d; }
+        .wechat-ai-code-header { display: flex; justify-content: space-between; align-items: center; background: #161b22; padding: 4px 8px; font-size: 11px; color: #8b949e !important; user-select: none; border-bottom: 1px solid #30363d; }
         .wechat-ai-code-lang { text-transform: uppercase; }
-        .wechat-ai-code-copy { background: transparent; border: 1px solid #555; color: #ddd; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 11px; font-family: inherit; }
+        .wechat-ai-code-copy { background: transparent; border: 1px solid #30363d; color: #c9d1d9 !important; border-radius: 4px; padding: 2px 8px; cursor: pointer; font-size: 11px; font-family: inherit; }
         .wechat-ai-code-copy:active { background: rgba(255,255,255,0.1); }
-        .wechat-ai-code-block pre { margin: 0; padding: 8px; overflow-x: auto; }
-        .wechat-ai-code-block code { font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; font-size: 12px; color: #d4d4d4; background: transparent !important; padding: 0 !important; }
+        .wechat-ai-code-block pre { margin: 0; padding: 12px; overflow-x: auto; }
+        .wechat-ai-code-block code { font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; font-size: 12px; background: transparent !important; padding: 0 !important; color: #c9d1d9 !important; }
+        .wechat-ai-code-block code * { color: #c9d1d9 !important; }
+        .wechat-ai-code-block .hljs-keyword,
+        .wechat-ai-code-block .hljs-built_in,
+        .wechat-ai-code-block .hljs-type,
+        .wechat-ai-code-block .hljs-literal,
+        .wechat-ai-code-block .hljs-number,
+        .wechat-ai-code-block .hljs-regexp,
+        .wechat-ai-code-block .hljs-symbol,
+        .wechat-ai-code-block .hljs-bullet,
+        .wechat-ai-code-block .hljs-link,
+        .wechat-ai-code-block .hljs-meta { color: #ff7b72 !important; }
+       
+        .wechat-ai-code-block .hljs-title,
+        .wechat-ai-code-block .hljs-section,
+        .wechat-ai-code-block .hljs-title.function_,
+        .wechat-ai-code-block .hljs-selector-id { color: #d2a8ff !important; }
+        
+        .wechat-ai-code-block .hljs-string,
+        .wechat-ai-code-block .hljs-doctag,
+        .wechat-ai-code-block .hljs-attr,
+        .wechat-ai-code-block .hljs-attribute { color: #a5d6ff !important; }
+        
+        .wechat-ai-code-block .hljs-comment,
+        .wechat-ai-code-block .hljs-quote { color: #8b949e !important; }
+        
+        .wechat-ai-code-block .hljs-variable,
+        .wechat-ai-code-block .hljs-template-variable,
+        .wechat-ai-code-block .hljs-selector-class,
+        .wechat-ai-code-block .hljs-selector-attr,
+        .wechat-ai-code-block .hljs-selector-pseudo { color: #ffa657 !important; }
+        
+        .wechat-ai-code-block .hljs-params { color: #c9d1d9 !important; }
     `);
 
     let state = 'normal', savedRect = null, rendered = 0, thinkingTimer = null, lastThinkingKey = '';
@@ -646,6 +682,24 @@
         } else if (lastThinkingKey) { lastThinkingKey = ''; stopThinking(); }
     }
 
+    function fallbackCopy(text, btn) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.top = '-9999px';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        try {
+            document.execCommand('copy');
+            btn.textContent = '已复制';
+        } catch (err) {
+            btn.textContent = '失败';
+        }
+        ta.remove();
+        setTimeout(() => btn.textContent = '复制', 2000);
+    }
+
     function renderMarkdownContent(container, text) {
         const codeBlockRegex = /```(\w*)\n([\s\S]*?)(?:```|$)/g;
         let lastIndex = 0;
@@ -678,23 +732,20 @@
             const copyBtn = document.createElement('button');
             copyBtn.className = 'wechat-ai-code-copy';
             copyBtn.textContent = '复制';
-            copyBtn.onclick = () => {
+            copyBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
                 if (navigator.clipboard) {
                     navigator.clipboard.writeText(code).then(() => {
                         copyBtn.textContent = '已复制';
                         setTimeout(() => copyBtn.textContent = '复制', 2000);
+                    }).catch(() => {
+                        fallbackCopy(code, copyBtn);
                     });
                 } else {
-                    const ta = document.createElement('textarea');
-                    ta.value = code;
-                    document.body.appendChild(ta);
-                    ta.select();
-                    document.execCommand('copy');
-                    ta.remove();
-                    copyBtn.textContent = '已复制';
-                    setTimeout(() => copyBtn.textContent = '复制', 2000);
+                    fallbackCopy(code, copyBtn);
                 }
-            };
+            });
 
             header.appendChild(langSpan);
             header.appendChild(copyBtn);
@@ -1094,7 +1145,7 @@
         if (!ready || Date.now() < urlChangeUntil) return;
         const latest = getReplyData();
         
-        if (!latest.text || latest.text.includes('当前是一个多AI群聊')) return;
+        if (!latest.text || latest.text.includes('系统提示：当前是一个多AI群聊')) return;
         
         if (latest.text.length < 5 && !latest.images.length) return;
         const key = latest.text + '###' + latest.images.join('|');
