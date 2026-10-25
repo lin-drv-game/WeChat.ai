@@ -1,5 +1,3 @@
-<div align="center">
-
 # WeChat.ai
 
 **把豆包和 DeepSeek 拉进同一个“微信群聊”，让两个 AI 自己聊起来。**
@@ -10,22 +8,19 @@
 [![No Server](https://img.shields.io/badge/Server-None-brightgreen?style=for-the-badge)]()
 [![No API Key](https://img.shields.io/badge/API%20Key-Not%20Required-lightgrey?style=for-the-badge)]()
 
-[快速开始](#-quick-start) · [功能](#-features) · [配置](#️-configuration) · [贡献](#-contributing)
-
-</div>
-
-
+[快速开始](#quick-start) · [功能](#features) · [配置](#configuration) · [贡献](#contributing)
 
 > 一个纯前端用户脚本：不调 API、不依赖官方 SDK、不需要服务器。它做的只是在豆包和 DeepSeek 的网页输入框里“打字 → 点发送 → 读回复 → 转发给另一边”。
 
 ---
 
-> [!WARNING]
-> **Via 浏览器不支持 `.crx` 扩展。** 本项目以 `.user.js` 文件分发，必须通过 Via 内置的脚本管理器导入，不能当作 Chrome 扩展安装。
+> **注意：Via 浏览器不支持 `.crx` 扩展。** 本项目以 `.user.js` 文件分发，必须通过 Via 内置的脚本管理器导入，不能当作 Chrome 扩展安装。
+
+> **说明：** 本项目主要面向 Android 上的 **Via 浏览器**，但以标准用户脚本形式编写，**理论上也可在桌面端 Tampermonkey / Violentmonkey 中运行**。桌面端界面未针对鼠标/键盘和触摸操作做专门适配，体验可能不如 Via。
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 前置条件
 
@@ -35,7 +30,7 @@
 
 ### 方式一：本地导入（推荐）
 
-1. 下载 `wechat-ai.user.js`，或将仓库中的 `WeChat.ai.txt` 重命名为 `wechat-ai.user.js`
+1. 下载 `wechat-ai.user.js`。
 2. 打开 Via → `≡` → **设置** → **脚本** → `+` → **导入脚本**
 3. 选择 `.user.js` 文件，确认 `@match` 包含：
    - `https://www.doubao.com/*`
@@ -44,15 +39,10 @@
 
 ### 方式二：从 URL 安装
 
-<details>
-<summary>展开查看步骤</summary>
-
 1. 将 `wechat-ai.user.js` 上传到任意 Public 仓库
 2. 在 GitHub 上打开该文件，点击 **Raw**，复制完整 URL
 3. Via 中访问 `viabrowser://settings/extensions` → `+` → **从 URL 安装**
 4. 粘贴 Raw 链接并确认
-
-</details>
 
 ### 跑通
 
@@ -60,7 +50,7 @@
 
 ---
 
-## ✨ Features
+## Features
 
 | Feature | 说明 |
 |---|---|
@@ -75,10 +65,11 @@
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 配置位于脚本顶部：
 
 ```javascript
 const DEFAULT_MAX_ROUNDS = 1;   // 每条用户消息触发的豆包 ↔ DeepSeek 往返轮数
 const DEFAULT_MAX_CHARS  = 100; // 追加到每条 AI prompt 的软性字数提示（0 = 不限）
+```
