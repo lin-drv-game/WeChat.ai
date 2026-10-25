@@ -1,68 +1,84 @@
+<div align="center">
+
 # WeChat.ai
 
-A WeChat-style floating chat window that bridges **Doubao** and **DeepSeek** web clients into one shared conversation, implemented as a pure front-end userscript for Via Browser on mobile.
+**把豆包和 DeepSeek 拉进同一个“微信群聊”，让两个 AI 自己聊起来。**
 
-No API keys. No official SDK. No server. Just DOM automation: the script types into each AI's web input box, clicks send, reads the reply from the page, and forwards it to the other side.
+[![Via Browser](https://img.shields.io/badge/Via-Android-3DDC84?style=for-the-badge&logo=android&logoColor=white)](https://viayoo.com/)
+[![Userscript](https://img.shields.io/badge/Userscript-.user.js-yellow?style=for-the-badge)](https://github.com/lin-drv-game/WeChat.ai/blob/main/wechat-ai.user.js)
+[![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)](./LICENSE)
+[![No Server](https://img.shields.io/badge/Server-None-brightgreen?style=for-the-badge)]()
+[![No API Key](https://img.shields.io/badge/API%20Key-Not%20Required-lightgrey?style=for-the-badge)]()
 
----
+[快速开始](#-quick-start) · [功能](#-features) · [配置](#️-configuration) · [贡献](#-contributing)
 
-## Features
+</div>
 
-- **Group-chat UI** — WeChat-inspired bubbles, avatars, left/right layout
-- **Doubao + DeepSeek in one loop** — user message → Doubao → Doubao reply → DeepSeek → DeepSeek reply → back to Doubao
-- **Round & length control** — configurable `maxRounds` and `maxChars` to stop runaway AI-to-AI chatter
-- **Image support** — Doubao-generated images are extracted and rendered; user can upload images via the `+` button
-- **Fully movable window** — drag by title bar, resize from bottom-right corner, maximize, minimize, snap to screen edge as a slim translucent bar
-- **Custom backgrounds** — long-press the blank message area to change or reset the chat background
-- **Custom avatars** — tap any avatar to upload your own (auto-cropped to 64×64 JPEG, stored in GM storage)
-- **Pull-to-refresh** — scroll to top and pull down to reload the page
-- **Persistent history** — messages are stored via `GM_setValue`, survive page reload and browser restart
+
+
+> 一个纯前端用户脚本：不调 API、不依赖官方 SDK、不需要服务器。它做的只是在豆包和 DeepSeek 的网页输入框里“打字 → 点发送 → 读回复 → 转发给另一边”。
 
 ---
 
-## Platform
-
-Designed and tested for **Via Browser on Android**. The script is a standard userscript and should also work in Tampermonkey / Violentmonkey on desktop, but the UI is optimized for mobile touch input.
-
-> Via does **not** support `.crx` extensions. This project is distributed as a `.user.js` file loaded through Via's built-in script manager.
+> [!WARNING]
+> **Via 浏览器不支持 `.crx` 扩展。** 本项目以 `.user.js` 文件分发，必须通过 Via 内置的脚本管理器导入，不能当作 Chrome 扩展安装。
 
 ---
 
-## Installation
+## 🚀 Quick Start
 
-### Option 1 — Import the file directly
+### 前置条件
 
-1. Rename `WeChat.ai.txt` to `wechat-ai.user.js`.
-2. Open Via → `≡` menu → **Settings** → **Scripts** → `+` → **Import script**.
-3. Select the `.user.js` file. Make sure the `@match` rules include:
+- Android 设备，安装 [Via 浏览器](https://viayoo.com/)
+- 已登录 [豆包](https://www.doubao.com) 和 [DeepSeek](https://chat.deepseek.com) 账号
+- **两个标签页同时保持打开**（每一边各自负责自己的半轮循环）
+
+### 方式一：本地导入（推荐）
+
+1. 下载 `wechat-ai.user.js`，或将仓库中的 `WeChat.ai.txt` 重命名为 `wechat-ai.user.js`
+2. 打开 Via → `≡` → **设置** → **脚本** → `+` → **导入脚本**
+3. 选择 `.user.js` 文件，确认 `@match` 包含：
    - `https://www.doubao.com/*`
    - `https://chat.deepseek.com/*`
-4. Save and enable.
+4. 保存并启用
 
-### Option 2 — Install from URL
+### 方式二：从 URL 安装
 
-1. Upload `wechat-ai.user.js` to a GitHub repo (Public).
-2. Open the file on GitHub and click **Raw**, copy the full URL.
-3. In Via, go to `viabrowser://settings/extensions` → `+` → **Install from URL**.
-4. Paste the Raw link and confirm.
+<details>
+<summary>展开查看步骤</summary>
 
----
+1. 将 `wechat-ai.user.js` 上传到任意 Public 仓库
+2. 在 GitHub 上打开该文件，点击 **Raw**，复制完整 URL
+3. Via 中访问 `viabrowser://settings/extensions` → `+` → **从 URL 安装**
+4. 粘贴 Raw 链接并确认
 
-## Usage
+</details>
 
-1. Open **Doubao** (`https://www.doubao.com`) and log in.
-2. Open **DeepSeek** (`https://chat.deepseek.com`) in another tab and log in.
-3. **Keep both tabs open** — each page handles its own half of the loop.
-4. A floating WeChat-style window appears at the bottom-right of either page.
-5. Type a message and hit **Send**. The flow runs automatically.
-6. To stop early, just send a new message — it resets the session.
+### 跑通
+
+打开豆包和 DeepSeek 两个标签页，右下角会出现浮动聊天窗口。输入一条消息并发送，两个 AI 就会按设定的轮次和长度自动交替对话。
 
 ---
 
-## Configuration
+## ✨ Features
 
-At the top of the script:
+| Feature | 说明 |
+|---|---|
+| **微信群聊 UI** | 左右气泡、头像、可拖拽、可缩放，还原微信聊天体验 |
+| **双 AI 自动循环** | 用户消息 → 豆包 → 豆包回复转发 DeepSeek → DeepSeek 回复转发回豆包 |
+| **轮次与长度控制** | `maxRounds` 控制往返轮数，`maxChars` 限制每条回复的软性长度，防止 AI 互相“刷屏” |
+| **图片互通** | 提取豆包生成的图片并渲染；用户也可通过 `+` 按钮上传图片 |
+| **完全可移动窗口** | 拖标题栏移动，右下角缩放，支持最大化 / 最小化 / 吸附为半透明侧边条 |
+| **自定义背景与头像** | 长按空白区更换聊天背景；点击头像上传自定义头像（自动裁剪为 64×64 JPEG） |
+| **下拉刷新** | 消息区滚动到顶部后下拉，重新加载页面 |
+| **持久化历史** | 消息通过 `GM_setValue` 存储，刷新或重启浏览器后不丢失 |
+
+---
+
+## ⚙️ Configuration
+
+配置位于脚本顶部：
 
 ```javascript
-const DEFAULT_MAX_ROUNDS = 1;   // how many Doubao↔DeepSeek round-trips per user message
-const DEFAULT_MAX_CHARS  = 100; // soft character limit hint appended to each AI prompt (0 = no limit)
+const DEFAULT_MAX_ROUNDS = 1;   // 每条用户消息触发的豆包 ↔ DeepSeek 往返轮数
+const DEFAULT_MAX_CHARS  = 100; // 追加到每条 AI prompt 的软性字数提示（0 = 不限）
