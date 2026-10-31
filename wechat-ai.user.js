@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         爱聊 (WeChat.ai)
 // @namespace    wechat.ai
-// @version      1.1.1
+// @version      1.1.2
 // @description  微信风格的豆包与 DeepSeek 实时群聊脚本
 // @match        https://www.doubao.com/*
 // @match        https://chat.deepseek.com/*
@@ -32,7 +32,7 @@
     const MAX_ROUNDS = 1;
     const MAX_CHARS = 100;
     const ANIM_MS = 220;
-    const MIN_SNAP_PX = 40;
+    const MIN_SNAP_PX = 15;
     const IMG_ACCEPT = 'image/jpeg,image/png,image/webp,image/gif,image/bmp,image/heic,image/heif,image/*';
 
     const DS_AVATAR_URL = 'https://avatars.githubusercontent.com/u/148330874?v=4';
@@ -91,6 +91,7 @@
             const last = msgs[msgs.length - 1];
             if (last.who === 'system' && last.text === text && Date.now() - last.ts < 5000) return;
         }
+        
         msgs.push(Object.assign({ who, text: text || '', images: images || [], ts: Date.now() + Math.random() }, extra || {}));
         GM_setValue(K.MSGS, JSON.stringify(msgs));
     };
@@ -213,7 +214,10 @@
             await sleep(300);
             if ((editor.innerText || '').trim().length > 0) return true;
 
-            editor.innerHTML = `<p>${text}</p>`;
+            editor.innerHTML = '';
+            const p = document.createElement('p');
+            p.textContent = text;
+            editor.appendChild(p);
             editor.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: text, bubbles: true, cancelable: false }));
             editor.dispatchEvent(new Event('change', { bubbles: true }));
             await sleep(300);
@@ -333,7 +337,8 @@
         const candidates = [];
         for (const img of container.querySelectorAll('img')) {
             if (!img.complete || img.naturalWidth < 80 || img.naturalHeight < 80) continue;
-            const src = img.closest('a')?.href || img.getAttribute('data-src') || img.getAttribute('data-original') || img.currentSrc || img.src || '';
+            const a = img.closest('a');
+            const src = (a ? a.href : null) || img.getAttribute('data-src') || img.getAttribute('data-original') || img.currentSrc || img.src || '';
             if (!src || src.startsWith('blob:')) continue;
             if (src.startsWith('data:') && src.length < 500) continue;
             if (/avatar|icon|emoji|logo|badge|gift|skeleton|placeholder|loading|spinner/i.test(src)) continue;
@@ -438,7 +443,9 @@
         #wechat-ai-bg-menu button:active { background: #f0f0f0; }
         #wechat-ai-bg-mask { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.25); z-index: 100000; }
         
-        /* 代码块基础样式 */
+        #wechat-ai-tooltip { display: none; position: absolute; background: rgba(0,0,0,0.7); color: #fff; padding: 4px 8px; border-radius: 4px; font-size: 12px; white-space: nowrap; pointer-events: none; z-index: 100000; top: 50%; transform: translateY(-50%); box-shadow: 0 2px 8px rgba(0,0,0,0.2); }
+        #wechat-ai-ui.wechat-ai-edge:hover #wechat-ai-tooltip { display: block; }
+
         .wechat-ai-code-block { margin: 6px 0; border-radius: 6px; overflow: hidden; background: #0d1117; border: 1px solid #30363d; }
         .wechat-ai-code-header { display: flex; justify-content: space-between; align-items: center; background: #161b22; padding: 4px 8px; font-size: 11px; color: #8b949e !important; user-select: none; border-bottom: 1px solid #30363d; }
         .wechat-ai-code-lang { text-transform: uppercase; }
@@ -446,7 +453,7 @@
         .wechat-ai-code-copy:active { background: rgba(255,255,255,0.1); }
         .wechat-ai-code-block pre { margin: 0; padding: 12px; overflow-x: auto; }
         .wechat-ai-code-block code { font-family: Consolas, Monaco, 'Andale Mono', 'Ubuntu Mono', monospace; font-size: 12px; background: transparent !important; padding: 0 !important; color: #c9d1d9 !important; }
-        .wechat-ai-code-block code * { color: #c9d1d9 !important; }
+        
         .wechat-ai-code-block .hljs-keyword,
         .wechat-ai-code-block .hljs-built_in,
         .wechat-ai-code-block .hljs-type,
@@ -457,7 +464,7 @@
         .wechat-ai-code-block .hljs-bullet,
         .wechat-ai-code-block .hljs-link,
         .wechat-ai-code-block .hljs-meta { color: #ff7b72 !important; }
-       
+        
         .wechat-ai-code-block .hljs-title,
         .wechat-ai-code-block .hljs-section,
         .wechat-ai-code-block .hljs-title.function_,
@@ -503,42 +510,53 @@
     const setState = next => { state = next; updateBtns(); };
 
     function computeSnap(left, width) {
-        if (state === 'min') {
-            if (left < MIN_SNAP_PX) return 'left';
-            if (left + width > window.innerWidth - MIN_SNAP_PX) return 'right';
-        } else if (state === 'normal') {
-            if (-left >= width / 3) return 'left';
-            if (left + width - window.innerWidth >= width / 3) return 'right';
-        }
+        if (left < MIN_SNAP_PX) return 'left';
+        if (left + width > window.innerWidth - MIN_SNAP_PX) return 'right';
         return null;
     }
     const clearSnapHints = el => el.classList.remove('wechat-ai-snap-left', 'wechat-ai-snap-right');
 
     function snapToEdge(el, side) {
-        clearSnapHints(el); setState(side === 'left' ? 'edge-l' : 'edge-r');
+        clearSnapHints(el); 
+        el.classList.add('wechat-ai-edge');
+        setState(side === 'left' ? 'edge-l' : 'edge-r');
+        
         const vh = window.innerHeight, h = Math.min(vh * 0.5, 320), top = Math.max(20, (vh - h) / 2);
         el.classList.add('wechat-ai-anim');
         Object.assign(el.style, { width: '8px', top: top + 'px', height: h + 'px', borderRadius: side === 'left' ? '0 6px 6px 0' : '6px 0 0 6px', background: 'rgba(7,193,96,0.55)', border: 'none', boxShadow: '0 0 8px rgba(7,193,96,0.35)', maxWidth: 'none', maxHeight: 'none', cursor: 'pointer', touchAction: 'none' });
-        if (side === 'left') { el.style.left = '0px'; el.style.right = 'auto'; }
-        else { el.style.right = '0px'; el.style.left = 'auto'; }
+        
+        if (side === 'left') { 
+            el.style.left = '0px'; el.style.right = 'auto'; 
+            const tt = document.getElementById('wechat-ai-tooltip');
+            if (tt) { tt.style.left = '16px'; tt.style.right = 'auto'; }
+        } else { 
+            el.style.right = '0px'; el.style.left = 'auto'; 
+            const tt = document.getElementById('wechat-ai-tooltip');
+            if (tt) { tt.style.right = '16px'; tt.style.left = 'auto'; }
+        }
+        
         setInnerVisible(false);
         setTimeout(() => el.classList.remove('wechat-ai-anim'), ANIM_MS + 20);
     }
 
     function restoreFromEdge(el, animate) {
-        setInnerVisible(true); clearSnapHints(el);
+        setInnerVisible(true); 
+        clearSnapHints(el);
+        el.classList.remove('wechat-ai-edge');
         Object.assign(el.style, { background: '#f5f5f5', border: '1px solid #ddd', boxShadow: '0 4px 16px rgba(0,0,0,0.15)', borderRadius: '10px', cursor: '', touchAction: '' });
-        setState('normal'); el.classList.remove('wechat-ai-anim'); applyRect(el, savedRect, animate);
+        setState('normal'); 
+        el.classList.remove('wechat-ai-anim'); 
+        applyRect(el, savedRect, animate);
     }
 
     function toggleMin(el) {
         clearSnapHints(el);
-        if (state === 'edge-l' || state === 'edge-r') return restoreFromEdge(el, true);
-        if (state === 'min') { applyRect(el, savedRect, true); setState('normal'); return; }
+        if (state === 'edge-l' || state === 'edge-r' || state === 'min') { 
+            restoreFromEdge(el, true); 
+            return; 
+        }
         if (state === 'normal') savedRect = readRect(el);
-        el.classList.add('wechat-ai-anim');
-        Object.assign(el.style, { right: 'auto', bottom: 'auto', left: savedRect.left + 'px', top: savedRect.top + 'px', width: savedRect.width + 'px', height: '32px', maxWidth: 'none', maxHeight: 'none' });
-        setState('min'); setTimeout(() => el.classList.remove('wechat-ai-anim'), ANIM_MS + 20);
+        snapToEdge(el, 'right');
     }
 
     function toggleMax(el) {
@@ -586,14 +604,12 @@
                 const r = readRect(el);
                 sx = x; sy = y; sl = r.left; st = r.top; w0 = r.width;
                 if (state === 'normal') savedRect = { left: r.left, top: r.top, width: r.width, height: r.height };
-                else if (state === 'min' && savedRect) { savedRect.left = r.left; savedRect.top = r.top; }
                 el.classList.remove('wechat-ai-anim');
                 Object.assign(el.style, { right: 'auto', bottom: 'auto', left: sl + 'px', top: st + 'px' });
             },
             move(x, y) {
                 let nl = sl + (x - sx), nt = st + (y - sy);
-                if (state === 'min') nl = Math.max(0, Math.min(window.innerWidth - Math.min(w0, 60), nl));
-                else nl = Math.max(-w0, Math.min(window.innerWidth, nl));
+                nl = Math.max(-w0, Math.min(window.innerWidth, nl));
                 nt = Math.max(0, Math.min(window.innerHeight - 32, nt));
                 el.style.left = nl + 'px'; el.style.top = nt + 'px';
                 const hint = computeSnap(nl, w0);
@@ -603,8 +619,7 @@
             end() {
                 const r = readRect(el), side = computeSnap(r.left, r.width);
                 if (side) return snapToEdge(el, side);
-                if (state === 'min') { if (savedRect) { savedRect.left = r.left; savedRect.top = r.top; } }
-                else if (state === 'normal') {
+                if (state === 'normal') {
                     const w = r.width; let fl = r.left;
                     if (fl < 0) fl = 0;
                     if (fl + w > window.innerWidth) fl = Math.max(0, window.innerWidth - w);
@@ -819,20 +834,34 @@
         row.appendChild(av); row.appendChild(b); c.appendChild(row); c.scrollTop = c.scrollHeight;
     }
 
+    let lastMsgJson = '';
     function flush() {
         const c = document.getElementById('wechat-ai-messages'), msgs = getMessages();
         if (!c) return;
+
+        const currentJson = JSON.stringify(msgs);
 
         if (msgs.length < rendered) {
             [...c.children].forEach(child => {
                 if (child.id !== 'wechat-ai-thinking') child.remove();
             });
             rendered = 0;
+            lastMsgJson = '';
         }
-        if (msgs.length > rendered) { 
+
+        if (msgs.length > rendered || (msgs.length > 0 && currentJson !== lastMsgJson)) {
+            if (msgs.length === rendered && msgs.length > 0) {
+                const lastRow = c.lastElementChild;
+                if (lastRow && lastRow.id !== 'wechat-ai-thinking') {
+                    lastRow.remove();
+                    rendered--;
+                }
+            }
             for (let i = rendered; i < msgs.length; i++) renderMessage(msgs[i]); 
             rendered = msgs.length; 
+            lastMsgJson = currentJson;
         }
+
         const thinking = document.getElementById('wechat-ai-thinking');
         if (thinking) {
             if (!getThinking().active) { if (thinking.style.display !== 'none') stopThinking(); }
@@ -840,7 +869,7 @@
         }
     }
 
-    function clearChat() {
+    function clearChat(silent) {
         GM_setValue(K.MSGS, '[]');
         GM_setValue(K.USER, '');
         GM_setValue(K.TASK, '');
@@ -849,6 +878,7 @@
         GM_setValue(K.THINKING, '');
         
         rendered = 0;
+        lastMsgJson = '';
         const c = document.getElementById('wechat-ai-messages');
         if (c) {
             [...c.children].forEach(child => {
@@ -864,6 +894,10 @@
         seen.clear();
         lastKey = '';
         stable = 0;
+        
+        if (!silent) {
+            pushMessage('system', 'CLEAR_ALL');
+        }
     }
 
     async function sendUserMessage() {
@@ -945,7 +979,7 @@
                 bar.style.height = '40px'; 
                 icon.classList.add('wechat-ai-spinning'); 
                 text.textContent = '正在刷新'; 
-                clearChat(); 
+                clearChat(true);
                 setTimeout(() => { try { location.reload(); } catch (e) {} }, 600); 
             }
             else { bar.style.height = '0px'; }
@@ -982,8 +1016,34 @@
                 <button id="wechat-ai-send">发送</button>
             </div>
             <div id="wechat-ai-resize"></div>
+            <div id="wechat-ai-tooltip">alt+w 召出</div>
         `;
         document.body.appendChild(div);
+        
+        document.addEventListener('keydown', e => {
+            if (e.altKey && e.key.toLowerCase() === 'w') {
+                const ui = document.getElementById('wechat-ai-ui');
+                if (!ui) return;
+                if (state === 'edge-l' || state === 'edge-r' || state === 'min') {
+                    restoreFromEdge(ui, true);
+                } else if (ui.style.display === 'none') {
+                    ui.style.display = 'flex';
+                    document.getElementById('wechat-ai-toggle').style.display = 'none';
+                }
+            }
+        });
+
+        if (!sessionStorage.getItem('wechat_ai_opened')) {
+            sessionStorage.setItem('wechat_ai_opened', '1');
+            try {
+                if (isDoubao) {
+                    window.open('https://chat.deepseek.com', '_blank');
+                } else {
+                    window.open('https://www.doubao.com/chat/', '_blank');
+                }
+            } catch (e) {}
+        }
+
         const toggle = document.createElement('button'); toggle.id = 'wechat-ai-toggle'; toggle.textContent = '💬'; document.body.appendChild(toggle);
         toggle.onclick = () => { div.style.display = 'flex'; toggle.style.display = 'none'; };
         document.getElementById('wechat-ai-send').onclick = sendUserMessage;
@@ -1079,7 +1139,7 @@
         else if (data.image && !imagePasted) textToSend = '[用户上传了一张图片，请根据上下文回答]';
         else if (!data.image) return;
 
-        if (textToSend) textToSend = GROUP_PROMPT(myLabel) + textToSend;
+        if (textToSend) textToSend = GROUP_PROMPT(myLabel) + 'User：' + textToSend;
 
         if (textToSend) {
             const ok = await typeIntoMyAI(textToSend);
@@ -1175,6 +1235,14 @@
             : myLabel + '：' + latest.text + charHint);
 
         GM_setValue(targetKey, JSON.stringify({ text, from: pf.from, round: newRound, timestamp: Date.now() }));
+    });
+
+    timer.add(() => {
+        const msgs = getMessages();
+        if (msgs.length === 1 && msgs[0].who === 'system' && msgs[0].text === 'CLEAR_ALL') {
+            clearChat(true);
+            GM_setValue(K.MSGS, '[]'); 
+        }
     });
 
     setInterval(() => {
